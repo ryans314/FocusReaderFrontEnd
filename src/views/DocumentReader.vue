@@ -44,6 +44,23 @@
         />
       <span class="progress-label">{{ progressLabel }}</span>
     </div>
+    <div v-if="showConfirm" class="highlight-confirm" :style="{ left: `${confirmPos.left}px`, top: `${confirmPos.top}px` }">
+      <button @click="confirmHighlight">Highlight</button>
+      <button @click="clearPendingConfirm" style="margin-left:.25rem;">Cancel</button>
+    </div>
+    <div v-if="showRemoveConfirm" class="remove-confirm" :style="{ left: `${removeConfirmPos.left}px`, top: `${removeConfirmPos.top}px` }">
+      <button @click="confirmRemove">Remove</button>
+      <button @click="clearRemoveConfirm" style="margin-left:.25rem;">Cancel</button>
+    </div>
+    <div v-if="annotationsList.length" style="width: min(88vw, 960px); align-self:center; margin-top:.5rem;">
+      <strong style="display:block; margin-bottom:.25rem;">Highlights</strong>
+      <ul style="margin:0; padding:0 0 0 1rem; max-height:120px; overflow:auto;">
+        <li v-for="(a, idx) in annotationsList" :key="a.cfi" style="margin:.25rem 0;">
+          <button @click="goToAnnotation(a.cfi)" style="margin-right:.5rem;">Go</button>
+          <span style="color:var(--muted);">{{ a.text }}</span>
+        </li>
+      </ul>
+    </div>
     <div v-if="error" style="color:#f87171; margin-top:.5rem;">{{ error }}</div>
     <div v-if="integrity" style="color:#34d399; margin-top:.5rem;">Integrity: {{ integrity }}</div>
     <div v-if="integrityError" style="color:#f87171; margin-top:.5rem;">Integrity check failed: {{ integrityError }}</div>
@@ -95,6 +112,234 @@ const tocOptions = ref<Array<{ label: string; href: string }>>([])
 const fontScale = ref(100)
 const pagesPerSpread = ref(2)
 const locationsPerSpread = ref(1)
+
+// Simple in-memory list of user highlights for this session. Each item contains
+// the CFI range and the selected text. Persistence can be added later.
+const annotationsList = ref<Array<{ cfi: string; text: string }>>([])
+const pendingHighlight = ref<{ cfi: string; text: string } | null>(null)
+let pendingSelectionWindow: Window | null = null
+const showConfirm = ref(false)
+const confirmPos = ref({ left: 0, top: 0 })
+let confirmTimer: any = null
+let iframeDocListenerTargets: Document[] = []
+let iframeWinListenerTargets: Window[] = []
+const removePendingElement = ref<Element | null>(null)
+const showRemoveConfirm = ref(false)
+const removeConfirmPos = ref({ left: 0, top: 0 })
+
+function clearRemoveConfirm() {
+  showRemoveConfirm.value = false
+  removePendingElement.value = null
+  try { window.removeEventListener('mousedown', onGlobalMouseDown) } catch {}
+}
+
+function clearPendingConfirm() {
+  showConfirm.value = false
+  pendingHighlight.value = null
+  try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
+  pendingSelectionWindow = null
+  if (confirmTimer) { clearTimeout(confirmTimer); confirmTimer = null }
+  try { window.removeEventListener('mousedown', onGlobalMouseDown) } catch {}
+  // keep iframe listeners attached for highlight/remove interactions; they
+  // will be torn down in cleanup when the rendition is destroyed.
+}
+
+function onGlobalMouseDown(e: MouseEvent) {
+  console.debug('[reader] onGlobalMouseDown target=', e.target)
+  const el = document.querySelector('.highlight-confirm, .remove-confirm')
+  if (!el) return clearPendingConfirm()
+  if (e.target && el.contains(e.target as Node)) return
+  clearPendingConfirm()
+}
+
+function findHighlightElement(startNode: Node | null): Element | null {
+  let node = startNode
+  const doc = (startNode && (startNode as any).ownerDocument) || document
+  const bodyBg = (() => {
+    try { return (doc && doc.body) ? (doc.defaultView ? (doc.defaultView.getComputedStyle(doc.body).backgroundColor || '') : '') : '' } catch { return '' }
+  })()
+  let depth = 0
+  while (node && depth < 12) {
+    depth++
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as Element
+      const cls = (el.className || '') as string
+      // direct markers: classes or data attrs we use for highlights
+      if (
+        el.getAttribute('data-user-highlight') ||
+        cls.includes('user-highlight') ||
+        cls.includes('highlight') ||
+        cls.includes('epubjs') ||
+        el.getAttribute('data-annotation') ||
+        el.hasAttribute('data-highlight')
+      ) return el
+
+      // avoid selecting structural block elements like <p>, <h1>, <div>, etc.
+      try {
+        const disp = (doc.defaultView?.getComputedStyle(el).display || '')
+        if (disp && !disp.startsWith('inline')) {
+            node = (node as Node).parentNode
+            continue
+          }
+      } catch {}
+
+      // fallback: detect inline element with a background different from the page
+      try {
+        const bg = (doc.defaultView?.getComputedStyle(el).backgroundColor || '')
+        const normalizedBg = (bg || '').trim()
+        if (
+          normalizedBg &&
+          normalizedBg !== 'transparent' &&
+          normalizedBg !== 'rgba(0, 0, 0, 0)' &&
+          normalizedBg !== bodyBg &&
+          normalizedBg !== 'rgb(255, 255, 255)'
+        ) return el
+      } catch {}
+    }
+    node = (node as Node).parentNode
+  }
+  return null
+}
+
+function onIframeMouseDown(e: MouseEvent) {
+  // Handle clicks inside the iframe: detect highlight elements by walking
+  // up the DOM and looking for common annotation classes or inline
+  // highlight styles. If found, show the remove confirmation popup.
+  try {
+    console.debug('[reader] onIframeMouseDown', { target: e.target, clientX: (e as any).clientX, clientY: (e as any).clientY })
+    const node = e.target as Node | null
+    if (!node) { clearPendingConfirm(); clearRemoveConfirm(); return }
+    // Try a precise hit-test inside the iframe document to find the exact element
+    let searchStart: Node | null = node
+    try {
+      const doc = (e.currentTarget as Document) || (node && (node as any).ownerDocument)
+      const cx = (e as any).clientX
+      const cy = (e as any).clientY
+      if (doc && typeof cx === 'number' && typeof cy === 'number') {
+        try {
+          // Translate outer client coordinates into iframe-local coordinates
+          const win = doc.defaultView as Window | null
+          const iframeEl = (win as any)?.frameElement as HTMLElement | null
+          if (iframeEl) {
+            const iframeRect = iframeEl.getBoundingClientRect()
+            const localX = cx - iframeRect.left
+            const localY = cy - iframeRect.top
+            console.debug('[reader] elementFromPoint local coords', { iframeRect, localX, localY })
+            const precise = doc.elementFromPoint(localX, localY)
+            if (precise) {
+              console.debug('[reader] elementFromPoint found', { tag: precise.tagName, class: precise.className })
+              searchStart = precise as Node
+            }
+          } else {
+            // fallback to using doc.elementFromPoint with global coords (may be off)
+            const precise = doc.elementFromPoint(cx, cy)
+            if (precise) {
+              console.debug('[reader] elementFromPoint (fallback) found', { tag: precise.tagName, class: precise.className })
+              searchStart = precise as Node
+            }
+          }
+        } catch (err) { /* ignore elementFromPoint errors */ }
+      }
+    } catch {}
+    const hl = findHighlightElement(searchStart)
+    if (hl) {
+      console.debug('[reader] highlight element matched', { tag: hl.tagName, class: hl.className, outer: (hl.outerHTML || '').slice(0,200) })
+      removePendingElement.value = hl
+      showRemoveConfirm.value = true
+      try {
+        const doc = e.currentTarget as Document
+        const win = doc?.defaultView
+        const iframeEl = (win as any)?.frameElement as HTMLElement | null
+        const clientX = (e as any).clientX
+        const clientY = (e as any).clientY
+        if (typeof clientX === 'number' && iframeEl) {
+          const iframeRect = iframeEl.getBoundingClientRect()
+          removeConfirmPos.value.left = Math.max(8, iframeRect.left + clientX)
+          removeConfirmPos.value.top = Math.max(8, iframeRect.top + clientY - 24)
+        } else {
+          const containerRect = readerEl.value?.getBoundingClientRect()
+          if (containerRect) {
+            removeConfirmPos.value.left = containerRect.left + containerRect.width / 2 - 24
+            removeConfirmPos.value.top = containerRect.top + 12
+          }
+        }
+      } catch (err) { console.debug('[reader] compute remove pos failed', err) }
+      return
+    }
+    clearPendingConfirm()
+    clearRemoveConfirm()
+  } catch (err) {
+    clearPendingConfirm(); clearRemoveConfirm()
+  }
+}
+
+function attachIframeDocListeners() {
+  try {
+    const iframes = readerEl.value?.querySelectorAll('iframe') || []
+    console.debug('[reader] attachIframeDocListeners found', iframes.length, 'iframes')
+    iframes.forEach((iframe) => {
+      try {
+        const frame = iframe as HTMLIFrameElement
+        const attach = (doc: Document | null) => {
+          if (!doc) return
+          if (!iframeDocListenerTargets.includes(doc)) {
+            // use capture so we see events even if inner handlers stopPropagation
+            console.debug('[reader] attaching doc listeners to iframe doc', doc)
+            doc.addEventListener('mousedown', onIframeMouseDown, true)
+            doc.addEventListener('click', onIframeMouseDown, true)
+            // pointer events can be more reliable in some user agents; attach them too
+            try { doc.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
+            try { doc.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
+            iframeDocListenerTargets.push(doc)
+            try {
+              const win = doc.defaultView
+              if (win && !iframeWinListenerTargets.includes(win)) {
+                console.debug('[reader] attaching window listeners to iframe window', win)
+                win.addEventListener('mousedown', onIframeMouseDown, true)
+                win.addEventListener('click', onIframeMouseDown, true)
+                try { win.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
+                try { win.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
+                iframeWinListenerTargets.push(win)
+              }
+            } catch (e) { console.debug('[reader] failed to attach window listeners', e) }
+          }
+        }
+        const doc = frame.contentDocument
+        if (doc) {
+          attach(doc)
+        } else {
+          // If the iframe hasn't loaded yet, attach on load
+          const onLoad = () => {
+            try { attach(frame.contentDocument) } catch {}
+            try { frame.removeEventListener('load', onLoad) } catch {}
+          }
+          frame.addEventListener('load', onLoad)
+        }
+      } catch {}
+    })
+  } catch {}
+}
+
+function detachAllIframeDocListeners() {
+  try {
+    for (const doc of iframeDocListenerTargets) {
+  try { doc.removeEventListener('mousedown', onIframeMouseDown) } catch {}
+  try { doc.removeEventListener('click', onIframeMouseDown) } catch {}
+  try { doc.removeEventListener('pointerdown', onIframeMouseDown) } catch {}
+  try { doc.removeEventListener('pointerup', onIframeMouseDown) } catch {}
+    }
+  } catch {}
+  iframeDocListenerTargets.length = 0
+  try {
+    for (const win of iframeWinListenerTargets) {
+  try { win.removeEventListener('mousedown', onIframeMouseDown, true) } catch {}
+  try { win.removeEventListener('click', onIframeMouseDown, true) } catch {}
+  try { win.removeEventListener('pointerdown', onIframeMouseDown, true) } catch {}
+  try { win.removeEventListener('pointerup', onIframeMouseDown, true) } catch {}
+    }
+  } catch {}
+  iframeWinListenerTargets.length = 0
+}
 
 const locationSpanSamples: number[] = []
 
@@ -192,6 +437,107 @@ async function renderEpubFromBase64(b64: string) {
   rendition.flow('paginated')
   rendition.spread('always')
   applyTheme()
+  // Listen for text selection events inside the rendition so the user can
+  // create quick highlights. epub.js fires `selected` with (cfiRange, contents).
+  try {
+    rendition.on('selected', (cfiRange: string, contents: any) => {
+      try {
+        const win = contents?.window as Window | undefined
+        const doc = win?.document
+        const selection = win?.getSelection?.()
+        const selText = selection?.toString().trim() || ''
+        if (!selText) return
+
+        // Try to obtain the selection Range so we can detect overlap with
+        // existing highlights (elements with class 'user-highlight'). If the
+        // selection intersects any existing highlight node, do nothing.
+        let selRange: Range | null = null
+        try {
+          if (selection && selection.rangeCount) selRange = selection.getRangeAt(0)
+        } catch (e) { selRange = null }
+
+        // Quick textual/Cfi-based dedupe: if we already have an annotation whose
+        // text contains the new selection or vice-versa, or exact same CFI, skip.
+        for (const existing of annotationsList.value) {
+          try {
+            if (!existing || !existing.text) continue
+            if (existing.cfi === cfiRange) {
+              try { selection?.removeAllRanges() } catch {}
+              return
+            }
+            const a = existing.text.trim()
+            const b = selText.trim()
+            if (!a || !b) continue
+            if (a.includes(b) || b.includes(a)) {
+              try { selection?.removeAllRanges() } catch {}
+              return
+            }
+          } catch (e) {
+            // ignore errors comparing annotations
+          }
+        }
+
+        if (selRange && doc) {
+          const existing = Array.from(doc.querySelectorAll('.user-highlight'))
+          for (const el of existing) {
+            try {
+              // If selection overlaps any existing highlight, abort
+              if ((selRange as Range).intersectsNode(el)) {
+                try { selection?.removeAllRanges() } catch {}
+                return
+              }
+            } catch (e) {
+              // ignore per-element errors
+            }
+          }
+        }
+
+        // Instead of creating the highlight immediately, show a small
+        // confirmation button near the selection. If the user clicks it
+        // within a short time, we will create the highlight. Otherwise
+        // the selection is cleared and nothing happens.
+  pendingHighlight.value = { cfi: cfiRange, text: selText }
+  // Remember the iframe window so we can clear its selection later.
+  pendingSelectionWindow = win || null
+
+        // Compute a position for the confirm button using the iframe's
+        // frameElement and the selection rect.
+        try {
+          const rangeRect = selRange?.getBoundingClientRect()
+          const iframeEl = (win as any)?.frameElement as HTMLElement | null
+          if (rangeRect && iframeEl) {
+            const iframeRect = iframeEl.getBoundingClientRect()
+            // place the button above the selection
+            confirmPos.value.left = Math.max(8, iframeRect.left + rangeRect.left)
+            confirmPos.value.top = Math.max(8, iframeRect.top + rangeRect.top - 36)
+          } else {
+            // fallback to container center
+            const containerRect = readerEl.value?.getBoundingClientRect()
+            if (containerRect) {
+              confirmPos.value.left = containerRect.left + containerRect.width / 2 - 24
+              confirmPos.value.top = containerRect.top + 12
+            }
+          }
+        } catch (e) {
+          // ignore positioning errors
+        }
+
+        showConfirm.value = true
+        try { window.addEventListener('mousedown', onGlobalMouseDown) } catch {}
+        try {
+          // Also listen for clicks inside the iframe so those can cancel the popup
+          // or open the remove popup when clicking a highlight.
+          attachIframeDocListeners()
+        } catch {}
+        if (confirmTimer) { clearTimeout(confirmTimer) }
+        confirmTimer = setTimeout(() => clearPendingConfirm(), 6000)
+      } catch (err) {
+        // ignore selection errors
+      }
+    })
+  } catch {
+    // ignore if rendition doesn't support selected event
+  }
   updateSpreadDivisor(rendition)
   rendition.on('layout', () => updateSpreadDivisor(rendition))
   rendition.on('relocated', () => updateSpreadDivisor(rendition))
@@ -208,6 +554,9 @@ async function renderEpubFromBase64(b64: string) {
     status.value = 'Rendered'
     clearTimer()
     updateSpreadDivisor(rendition)
+    // Attach iframe listeners when a section is rendered so clicks on
+    // highlights can be detected.
+    setTimeout(() => attachIframeDocListeners(), 50)
   })
 
   rendition.on('relocated', (location: any) => {
@@ -243,6 +592,7 @@ async function renderEpubFromBase64(b64: string) {
     bookInstance = null
     renditionInstance = null
     resetNavigationState()
+    try { detachAllIframeDocListeners() } catch {}
   }
 }
 
@@ -629,6 +979,118 @@ function prevPage() {
   renditionInstance?.prev()
 }
 
+/** Navigate the rendition to a saved annotation CFI. */
+function goToAnnotation(cfi: string) {
+  if (!cfi || !renditionInstance) return
+  try { renditionInstance.display(cfi) } catch {}
+}
+
+/** User confirmed creating the pending highlight; apply and record it. */
+function confirmHighlight() {
+  if (!pendingHighlight.value || !renditionInstance) { clearPendingConfirm(); return }
+  const { cfi, text } = pendingHighlight.value
+  // Try to wrap the selection in the iframe first. If that succeeds
+  // we will skip calling epub.js annotation APIs to avoid duplicate
+  // highlights. This is best-effort and may silently fail on complex DOM.
+  let wrapped = false
+  try {
+    const win = pendingSelectionWindow
+    const sel = win?.getSelection?.()
+    if (sel && sel.rangeCount) {
+      const range = sel.getRangeAt(0)
+      const doc = (range.startContainer && (range.startContainer as any).ownerDocument) || win?.document
+      if (doc) {
+        try {
+          const span = doc.createElement('span')
+          span.className = 'user-highlight'
+          span.setAttribute('data-user-highlight', '1')
+          span.style.background = '#fff176'
+          span.style.color = '#000'
+          span.style.pointerEvents = 'auto'
+          try {
+            range.surroundContents(span)
+            wrapped = true
+          } catch (err) {
+            // fallback when surroundContents cannot be used
+            try {
+              const frag = range.extractContents()
+              span.appendChild(frag)
+              range.insertNode(span)
+              wrapped = true
+            } catch {}
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // If we didn't wrap the selection directly, fall back to epub.js annotation
+  // APIs (older epub.js versions) so the user still gets a highlight.
+  if (!wrapped) {
+    try {
+      try { (renditionInstance as any).annotations.add('highlight', cfi, {}, () => {}, 'user-highlight') } catch (err) {
+        try { (renditionInstance as any).annotations.highlight(cfi, {}, undefined, 'user-highlight') } catch {}
+      }
+    } catch (e) {
+      // ignore annotation errors
+    }
+  }
+
+  // Record the annotation once
+  annotationsList.value.push({ cfi, text })
+
+  // Ensure any highlights present in iframe docs have the deterministic attribute
+  try {
+    const docs = iframeDocListenerTargets.length ? iframeDocListenerTargets.slice() : []
+    for (const doc of docs) {
+      try {
+        const els = Array.from(doc.querySelectorAll('.user-highlight, .highlight'))
+        for (const el of els) {
+          try {
+            if (!el.getAttribute('data-user-highlight')) {
+              el.setAttribute('data-user-highlight', '1')
+              ;(el as HTMLElement).style.pointerEvents = 'auto'
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+  // Clear selection inside the iframe (if we recorded it) so the blue selection
+  // is removed and only the yellow highlight remains visible.
+  try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
+  pendingSelectionWindow = null
+  clearPendingConfirm()
+}
+
+/** Confirm and remove the pending highlighted element. */
+function confirmRemove() {
+  const el = removePendingElement.value
+  if (!el) { clearRemoveConfirm(); return }
+  // Only allow removing elements that were explicitly marked as highlights.
+  // This avoids accidentally unwrapping large structural elements.
+  try {
+    const hasMarker = el.getAttribute && (el.getAttribute('data-user-highlight') || el.classList?.contains('user-highlight'))
+    if (!hasMarker) { clearRemoveConfirm(); return }
+  } catch { clearRemoveConfirm(); return }
+  try {
+    // Unwrap the highlight element so text remains but highlight styling is gone.
+    const parent = el.parentNode
+    if (parent) {
+      while (el.firstChild) parent.insertBefore(el.firstChild, el)
+      parent.removeChild(el)
+    }
+  } catch {}
+
+  // Remove matching entries from annotationsList (by text equality or empty cfi)
+  try {
+    const text = (el.textContent || '').trim()
+    annotationsList.value = annotationsList.value.filter((a) => a.text !== text)
+  } catch {}
+
+  clearRemoveConfirm()
+}
+
 /**
  * Seek to the page represented by the slider position using estimated locations.
  */
@@ -675,6 +1137,11 @@ function applyTheme() {
       },
       '::selection': {
         background: '#b3d4ff'
+      }
+      ,
+      '.user-highlight': {
+        background: '#fff176',
+        color: '#000'
       }
     }
     try { renditionInstance.themes.register('reader-high-contrast', theme) } catch { /* ignore if already registered */ }
@@ -738,6 +1205,31 @@ function onKeyDown(event: KeyboardEvent) {
   align-items: center;
   gap: .75rem;
   margin-top: .75rem;
+}
+
+.highlight-confirm {
+  position: fixed;
+  z-index: 1200;
+  background: white;
+  border: 1px solid #d1d5db;
+  padding: .25rem;
+  border-radius: .25rem;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+}
+
+.remove-confirm {
+  position: fixed;
+  z-index: 1200;
+  background: white;
+  border: 1px solid #fca5a5;
+  padding: .25rem;
+  border-radius: .25rem;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+}
+
+/* Make sure highlight elements accept pointer events so clicks reach our handlers */
+.user-highlight, .highlight {
+  pointer-events: auto;
 }
 
 .reader-slider {
