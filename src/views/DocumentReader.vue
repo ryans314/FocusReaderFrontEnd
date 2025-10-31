@@ -3,7 +3,6 @@
     <div style="display:flex; align-items:center; gap:.75rem;">
       <button @click="goBack">← Back</button>
       <h2 style="margin:0;">{{ title }}</h2>
-      <span style="color:var(--muted)">({{ documentId }})</span>
       <span style="flex:1"></span>
       <button v-if="base64Content" @click="downloadEpub" type="button">Download EPUB</button>
       <span v-if="pending" style="color:var(--muted)">Loading… {{ status }}</span>
@@ -28,6 +27,13 @@
         <span style="color:var(--muted);">Text size</span>
         <button @click="decreaseFont" :disabled="fontScale <= 70">A−</button>
         <button @click="increaseFont" :disabled="fontScale >= 160">A+</button>
+      </div>
+
+      <div class="toolbar-section">
+        <span style="color:var(--muted);">Font</span>
+        <select class="toc-select" v-model="fontFamily" @change="onFontChange">
+          <option v-for="opt in fontOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
       </div>
     </div>
 
@@ -81,22 +87,7 @@
     </div>
     <!-- Floating tooltip for annotation notes (positioned relative to viewport, computed from iframe coordinates) -->
     <div v-if="tooltipVisible" class="annotation-tooltip" :style="{ left: `${tooltipPos.left}px`, top: `${tooltipPos.top}px` }">{{ tooltipText }}</div>
-    <div v-if="annotationsList.length" style="width: min(88vw, 960px); align-self:center; margin-top:.5rem;">
-      <strong style="display:block; margin-bottom:.25rem;">Highlights</strong>
-      <ul style="margin:0; padding:0 0 0 1rem; max-height:120px; overflow:auto;">
-        <li v-for="(a, idx) in annotationsList" :key="a.cfi" style="margin:.25rem 0;">
-          <button @click="goToAnnotation(a.cfi)" style="margin-right:.5rem;">Go</button>
-          <span style="color:var(--muted);">{{ a.text }}</span>
-        </li>
-      </ul>
-    </div>
-    <div v-if="error" style="color:#f87171; margin-top:.5rem;">{{ error }}</div>
-    <div v-if="integrity" style="color:#34d399; margin-top:.5rem;">Integrity: {{ integrity }}</div>
-    <div v-if="integrityError" style="color:#f87171; margin-top:.5rem;">Integrity check failed: {{ integrityError }}</div>
-    <div v-if="!pending && !error && !rendered" style="color:#fbbf24; margin-top:.5rem;">
-      Still preparing the book… If this persists, the EPUB might be invalid or too large to process in-browser.
-      <button @click="retry" style="margin-left:.5rem;">Try again</button>
-    </div>
+    
   </div>
 </template>
 
@@ -139,6 +130,17 @@ const currentChapter = ref('')
 const selectedToc = ref('')
 const tocOptions = ref<Array<{ label: string; href: string }>>([])
 const fontScale = ref(100)
+const fontFamily = ref<string>('"Times New Roman", Times, serif')
+const fontOptions = [
+  { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
+  { label: 'Sans-serif', value: 'sans-serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Garamond', value: 'Garamond, serif' },
+  { label: 'Segoe UI', value: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' },
+  { label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
+  { label: 'Monospace', value: 'monospace' }
+]
 const pagesPerSpread = ref(2)
 const locationsPerSpread = ref(1)
 
@@ -2653,6 +2655,11 @@ function applyFont() {
   applyTheme()
 }
 
+function onFontChange() {
+  // Apply the selected font family to the rendition using the theme
+  applyTheme()
+}
+
 /** Apply a simple, high-contrast theme to the book content (black on white). */
 function applyTheme() {
   if (!renditionInstance) return
@@ -2662,7 +2669,8 @@ function applyTheme() {
     const theme = {
       body: {
         color: '#000000',
-        background: '#ffffff'
+        background: '#ffffff',
+        ['font-family']: fontFamily.value
       },
       '::selection': {
         background: '#b3d4ff'
@@ -2675,6 +2683,10 @@ function applyTheme() {
     }
     try { renditionInstance.themes.register('reader-high-contrast', theme) } catch { /* ignore if already registered */ }
     try { renditionInstance.themes.select('reader-high-contrast') } catch { /* fallback if select fails */ }
+    // Ensure live font changes take effect even if the theme was already registered
+    try {
+      (renditionInstance as any).themes.override('font-family', fontFamily.value, true)
+    } catch {}
   } catch {
     // ignore theme application errors
   }
