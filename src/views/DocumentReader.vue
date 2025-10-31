@@ -209,6 +209,37 @@ function onIframeMouseDown(e: MouseEvent) {
     console.debug('[reader] onIframeMouseDown', { target: e.target, clientX: (e as any).clientX, clientY: (e as any).clientY })
     const node = e.target as Node | null
     if (!node) { clearPendingConfirm(); clearRemoveConfirm(); return }
+    // If the event target (or its ancestors) is already a highlight, prefer
+    // that immediately instead of running elementFromPoint which may return
+    // a parent like <body> or <p> in some cases. This avoids overwriting a
+    // correct direct match with a less useful hit-test result.
+    try {
+      const direct = findHighlightElement(node)
+      if (direct) {
+        console.debug('[reader] direct highlight element matched (early)', { tag: direct.tagName, class: direct.className, outer: (direct.outerHTML || '').slice(0,200) })
+        removePendingElement.value = direct
+        showRemoveConfirm.value = true
+        try {
+          const doc = e.currentTarget as Document
+          const win = doc?.defaultView
+          const iframeEl = (win as any)?.frameElement as HTMLElement | null
+          const clientX = (e as any).clientX
+          const clientY = (e as any).clientY
+          if (typeof clientX === 'number' && iframeEl) {
+            const iframeRect = iframeEl.getBoundingClientRect()
+            removeConfirmPos.value.left = Math.max(8, iframeRect.left + clientX)
+            removeConfirmPos.value.top = Math.max(8, iframeRect.top + clientY - 24)
+          } else {
+            const containerRect = readerEl.value?.getBoundingClientRect()
+            if (containerRect) {
+              removeConfirmPos.value.left = containerRect.left + containerRect.width / 2 - 24
+              removeConfirmPos.value.top = containerRect.top + 12
+            }
+          }
+        } catch (err) { console.debug('[reader] compute remove pos failed (early)', err) }
+        return
+      }
+    } catch {}
     // Try a precise hit-test inside the iframe document to find the exact element
     let searchStart: Node | null = node
     try {
@@ -225,10 +256,60 @@ function onIframeMouseDown(e: MouseEvent) {
             const localX = cx - iframeRect.left
             const localY = cy - iframeRect.top
             console.debug('[reader] elementFromPoint local coords', { iframeRect, localX, localY })
-            const precise = doc.elementFromPoint(localX, localY)
-            if (precise) {
-              console.debug('[reader] elementFromPoint found', { tag: precise.tagName, class: precise.className })
-              searchStart = precise as Node
+            // Prefer elementsFromPoint which returns all stacked elements at the
+            // coordinates; scan for any element that is or contains a user
+            // highlight. Fallback to elementFromPoint when elementsFromPoint
+            // is not available.
+            let matched: Element | null = null
+            try {
+              const list = (doc as Document).elementsFromPoint(localX, localY) as Element[]
+              console.debug('[reader] elementsFromPoint count', list?.length)
+              if (list && list.length) {
+                for (const el of list) {
+                  try {
+                    // if this element itself is a highlight marker, pick it
+                    if (el.getAttribute && (el.getAttribute('data-user-highlight') || el.classList?.contains('user-highlight') || el.className?.includes('highlight'))) {
+                      matched = el
+                      break
+                    }
+                    // otherwise try to find a highlight ancestor starting from this element
+                    const found = findHighlightElement(el)
+                    if (found) { matched = found; break }
+                  } catch {}
+                }
+              }
+            } catch (err) {
+              // elementsFromPoint may not be supported in some environments
+            }
+            if (!matched) {
+              const precise = doc.elementFromPoint(localX, localY)
+              if (precise) matched = precise
+            }
+            if (matched) {
+              // If the matched element isn't itself a highlight marker, try
+              // searching its descendants for highlight elements whose
+              // bounding box contains the local click coordinates. This
+              // handles cases where the highlight span is nested inside a
+              // block-level parent that elementFromPoint returns.
+              try {
+                const isDirect = matched.getAttribute && (matched.getAttribute('data-user-highlight') || matched.classList?.contains('user-highlight') || matched.className?.includes('highlight'))
+                if (!isDirect) {
+                  try {
+                    const candidates = Array.from((matched as Element).querySelectorAll('[data-user-highlight], .user-highlight, .highlight'))
+                    for (const cand of candidates) {
+                      try {
+                        const r = cand.getBoundingClientRect()
+                        if (typeof localX === 'number' && typeof localY === 'number' && localX >= r.left && localX <= r.right && localY >= r.top && localY <= r.bottom) {
+                          matched = cand
+                          break
+                        }
+                      } catch {}
+                    }
+                  } catch {}
+                }
+              } catch {}
+              console.debug('[reader] hit-test matched element', { tag: matched.tagName, class: matched.className })
+              searchStart = matched as Node
             }
           } else {
             // fallback to using doc.elementFromPoint with global coords (may be off)
