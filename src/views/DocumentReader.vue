@@ -45,8 +45,9 @@
       <span class="progress-label">{{ progressLabel }}</span>
     </div>
     <div v-if="showConfirm" class="highlight-confirm" :style="{ left: `${confirmPos.left}px`, top: `${confirmPos.top}px` }">
-      <button @click="confirmHighlight">Highlight</button>
-      <button @click="clearPendingConfirm" style="margin-left:.25rem;">Cancel</button>
+      <div class="color-palette" style="display:flex; gap:.375rem;">
+        <button v-for="c in highlightColors" :key="c" class="color-button" :style="{ background: c, width: '28px', height: '28px', borderRadius: '6px', border: '1px solid #ddd' }" @click="applyHighlight(c)" :title="c"></button>
+      </div>
     </div>
     <div v-if="showRemoveConfirm" class="remove-confirm" :style="{ left: `${removeConfirmPos.left}px`, top: `${removeConfirmPos.top}px` }">
       <button @click="confirmRemove">Remove</button>
@@ -114,8 +115,10 @@ const pagesPerSpread = ref(2)
 const locationsPerSpread = ref(1)
 
 // Simple in-memory list of user highlights for this session. Each item contains
-// the CFI range and the selected text. Persistence can be added later.
-const annotationsList = ref<Array<{ cfi: string; text: string }>>([])
+// the CFI range, the selected text, and an optional color. Persistence can be added later.
+const annotationsList = ref<Array<{ cfi: string; text: string; color?: string }>>([])
+// A small Notability-like palette for users to pick highlight colors.
+const highlightColors = ['#fff176', '#ffd54f', '#ffab91', '#f48fb1', '#b39ddb', '#80cbc4', '#c5e1a5']
 const pendingHighlight = ref<{ cfi: string; text: string } | null>(null)
 let pendingSelectionWindow: Window | null = null
 const showConfirm = ref(false)
@@ -224,10 +227,12 @@ function syncHighlightAttributes(targetDoc?: Document) {
     const docs = targetDoc ? [targetDoc] : (iframeDocListenerTargets.length ? iframeDocListenerTargets.slice() : [])
     if (!docs.length) return
     const textToCfi = new Map<string, string>()
+    const cfiToColor = new Map<string, string>()
     for (const ann of annotationsList.value) {
       try {
         const text = (ann.text || '').trim()
         if (text && !textToCfi.has(text)) textToCfi.set(text, ann.cfi)
+        if (ann.cfi && ann.color) cfiToColor.set(ann.cfi, ann.color)
       } catch {}
     }
     for (const doc of docs) {
@@ -237,7 +242,15 @@ function syncHighlightAttributes(targetDoc?: Document) {
         try {
           if (!el.getAttribute('data-user-highlight')) el.setAttribute('data-user-highlight', '1')
           ;(el as HTMLElement).style.pointerEvents = 'auto'
-          if (getHighlightCfi(el)) continue
+          const existingCfi = getHighlightCfi(el)
+          if (existingCfi && cfiToColor.has(existingCfi)) {
+            try {
+              const colorVal: string = (cfiToColor.get(existingCfi) || '') as string
+              (el as HTMLElement).style.background = colorVal
+              try { (el as HTMLElement).style.color = getContrastColor(colorVal) } catch {}
+            } catch {}
+          }
+          if (existingCfi) continue
           const text = (el.textContent || '').trim()
           if (!text) continue
           const cfi = textToCfi.get(text)
@@ -250,11 +263,67 @@ function syncHighlightAttributes(targetDoc?: Document) {
   }
 }
 
+// Small helpers to determine readable text color against a background.
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  try {
+    const h = hex.replace('#', '')
+    if (h.length === 3) {
+      return { r: parseInt(h[0] + h[0], 16), g: parseInt(h[1] + h[1], 16), b: parseInt(h[2] + h[2], 16) }
+    }
+    if (h.length === 6) {
+      return { r: parseInt(h.slice(0,2), 16), g: parseInt(h.slice(2,4), 16), b: parseInt(h.slice(4,6), 16) }
+    }
+  } catch {}
+  return null
+}
+
+function getContrastColor(bgHex: string): string {
+  const rgb = hexToRgb(bgHex)
+  if (!rgb) return '#000'
+  // Perceived luminance formula
+  const lum = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b
+  return lum > 186 ? '#000' : '#fff'
+}
+
+/** Return true when a Range contains block-level elements or multiple top-level nodes. */
+function isRangeMultiBlock(range: Range | null): boolean {
+  if (!range) return false
+  try {
+    const frag = range.cloneContents()
+    if (!frag) return false
+    if (frag.childNodes.length > 1) return true
+    const blockTags = /^(P|DIV|SECTION|LI|BLOCKQUOTE|H[1-6]|ARTICLE|HEADER|FOOTER|NAV)$/i
+    const stack: Node[] = Array.from(frag.childNodes)
+    while (stack.length) {
+      const n = stack.shift() as Node
+      if (!n) continue
+      if (n.nodeType === Node.ELEMENT_NODE) {
+        const el = n as Element
+        try {
+          if (el.tagName && blockTags.test(el.tagName)) return true
+        } catch {}
+        for (const c of Array.from(el.childNodes)) stack.push(c)
+      }
+    }
+  } catch (e) {
+    // conservatively treat unknown errors as multi-block to avoid bad wraps
+    return true
+  }
+  return false
+}
+
 function onIframeMouseDown(e: MouseEvent) {
   // Handle clicks inside the iframe: detect highlight elements by walking
   // up the DOM and looking for common annotation classes or inline
   // highlight styles. If found, show the remove confirmation popup.
   try {
+    // If the user is releasing the mouse (pointerup) but the highlight
+    // confirmation popup is visible, ignore pointerup so the popup isn't
+    // dismissed immediately after appearing due to a long-press.
+    if ((e.type === 'pointerup' || e.type === 'mouseup') && showConfirm.value) {
+        e.stopPropagation()
+        return
+    }
     console.debug('[reader] onIframeMouseDown', { target: e.target, clientX: (e as any).clientX, clientY: (e as any).clientY })
     const node = e.target as Node | null
     if (!node) { clearPendingConfirm(); clearRemoveConfirm(); return }
@@ -428,8 +497,8 @@ function attachIframeDocListeners() {
           if (!iframeDocListenerTargets.includes(doc)) {
             // use capture so we see events even if inner handlers stopPropagation
             console.debug('[reader] attaching doc listeners to iframe doc', doc)
-            doc.addEventListener('mousedown', onIframeMouseDown, true)
-            doc.addEventListener('click', onIframeMouseDown, true)
+            // doc.addEventListener('mousedown', onIframeMouseDown, true)
+            // doc.addEventListener('click', onIframeMouseDown, true)
             // pointer events can be more reliable in some user agents; attach them too
             try { doc.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
             try { doc.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
@@ -438,8 +507,8 @@ function attachIframeDocListeners() {
               const win = doc.defaultView
               if (win && !iframeWinListenerTargets.includes(win)) {
                 console.debug('[reader] attaching window listeners to iframe window', win)
-                win.addEventListener('mousedown', onIframeMouseDown, true)
-                win.addEventListener('click', onIframeMouseDown, true)
+                // win.addEventListener('mousedown', onIframeMouseDown, true)
+                // win.addEventListener('click', onIframeMouseDown, true)
                 try { win.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
                 try { win.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
                 iframeWinListenerTargets.push(win)
@@ -635,6 +704,15 @@ async function renderEpubFromBase64(b64: string) {
             }
           }
         }
+
+        // Disallow multi-paragraph (multi-block) selections — clear and ignore.
+        try {
+          if (selRange && isRangeMultiBlock(selRange)) {
+            console.debug('[reader] multi-block selection ignored')
+            try { selection?.removeAllRanges() } catch {}
+            return
+          }
+        } catch {}
 
         // Instead of creating the highlight immediately, show a small
         // confirmation button near the selection. If the user clicks it
@@ -1131,9 +1209,10 @@ function goToAnnotation(cfi: string) {
 }
 
 /** User confirmed creating the pending highlight; apply and record it. */
-function confirmHighlight() {
+function confirmHighlight(color?: string) {
   if (!pendingHighlight.value || !renditionInstance) { clearPendingConfirm(); return }
   const { cfi, text } = pendingHighlight.value
+  const chosenColor = color || '#fff176'
   // Try to wrap the selection in the iframe first. If that succeeds
   // we will skip calling epub.js annotation APIs to avoid duplicate
   // highlights. This is best-effort and may silently fail on complex DOM.
@@ -1150,8 +1229,9 @@ function confirmHighlight() {
           span.className = 'user-highlight'
           span.setAttribute('data-user-highlight', '1')
           span.setAttribute('data-annotation-cfi', cfi)
-          span.style.background = '#fff176'
-          span.style.color = '#000'
+          span.style.background = chosenColor
+          // choose a readable text color against the chosen background
+          try { span.style.color = getContrastColor(chosenColor) } catch { span.style.color = '#000' }
           span.style.pointerEvents = 'auto'
           try {
             range.surroundContents(span)
@@ -1182,8 +1262,8 @@ function confirmHighlight() {
     }
   }
 
-  // Record the annotation once
-  annotationsList.value.push({ cfi, text })
+  // Record the annotation once (including chosen color)
+  annotationsList.value.push({ cfi, text, color: chosenColor })
 
   // Ensure any highlights present in iframe docs keep consistent metadata.
   syncHighlightAttributes()
@@ -1193,6 +1273,11 @@ function confirmHighlight() {
   try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
   pendingSelectionWindow = null
   clearPendingConfirm()
+}
+
+/** Helper invoked by color buttons in the confirm popup. */
+function applyHighlight(color: string) {
+  try { confirmHighlight(color) } catch { clearPendingConfirm() }
 }
 
 /** Confirm and remove the pending highlighted element. */
@@ -1434,5 +1519,15 @@ function onKeyDown(event: KeyboardEvent) {
   width: 150px;
   font-size: .85rem;
   padding: .3rem .35rem;
+}
+
+.color-button {
+  padding: 0;
+  display: inline-block;
+  cursor: pointer;
+}
+
+.color-button:focus {
+  outline: 2px solid #2563eb33;
 }
 </style>
