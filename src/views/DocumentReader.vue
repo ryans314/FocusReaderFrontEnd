@@ -123,13 +123,13 @@ const confirmPos = ref({ left: 0, top: 0 })
 let confirmTimer: any = null
 let iframeDocListenerTargets: Document[] = []
 let iframeWinListenerTargets: Window[] = []
-const removePendingElement = ref<Element | null>(null)
+const removePending = ref<{ element: Element; cfi: string | null } | null>(null)
 const showRemoveConfirm = ref(false)
 const removeConfirmPos = ref({ left: 0, top: 0 })
 
 function clearRemoveConfirm() {
   showRemoveConfirm.value = false
-  removePendingElement.value = null
+  removePending.value = null
   try { window.removeEventListener('mousedown', onGlobalMouseDown) } catch {}
 }
 
@@ -201,6 +201,55 @@ function findHighlightElement(startNode: Node | null): Element | null {
   return null
 }
 
+function getHighlightCfi(el: Element | null): string | null {
+  if (!el) return null
+  try {
+    const attrNames = ['data-annotation-cfi', 'data-epubcfi', 'data-cfi', 'data-ePubCFI']
+    for (const name of attrNames) {
+      const value = el.getAttribute?.(name)
+      if (value) return value
+    }
+  } catch {}
+  try {
+    const text = (el.textContent || '').trim()
+    if (!text) return null
+    const match = annotationsList.value.find((a) => (a.text || '').trim() === text)
+    return match?.cfi || null
+  } catch {}
+  return null
+}
+
+function syncHighlightAttributes(targetDoc?: Document) {
+  try {
+    const docs = targetDoc ? [targetDoc] : (iframeDocListenerTargets.length ? iframeDocListenerTargets.slice() : [])
+    if (!docs.length) return
+    const textToCfi = new Map<string, string>()
+    for (const ann of annotationsList.value) {
+      try {
+        const text = (ann.text || '').trim()
+        if (text && !textToCfi.has(text)) textToCfi.set(text, ann.cfi)
+      } catch {}
+    }
+    for (const doc of docs) {
+      if (!doc) continue
+      const elements = Array.from(doc.querySelectorAll('[data-user-highlight], .user-highlight, [data-annotation-cfi], [data-epubcfi], [data-cfi]')) as Element[]
+      for (const el of elements) {
+        try {
+          if (!el.getAttribute('data-user-highlight')) el.setAttribute('data-user-highlight', '1')
+          ;(el as HTMLElement).style.pointerEvents = 'auto'
+          if (getHighlightCfi(el)) continue
+          const text = (el.textContent || '').trim()
+          if (!text) continue
+          const cfi = textToCfi.get(text)
+          if (cfi) el.setAttribute('data-annotation-cfi', cfi)
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.debug('[reader] syncHighlightAttributes failed', err)
+  }
+}
+
 function onIframeMouseDown(e: MouseEvent) {
   // Handle clicks inside the iframe: detect highlight elements by walking
   // up the DOM and looking for common annotation classes or inline
@@ -217,7 +266,8 @@ function onIframeMouseDown(e: MouseEvent) {
       const direct = findHighlightElement(node)
       if (direct) {
         console.debug('[reader] direct highlight element matched (early)', { tag: direct.tagName, class: direct.className, outer: (direct.outerHTML || '').slice(0,200) })
-        removePendingElement.value = direct
+        const cfi = getHighlightCfi(direct)
+        removePending.value = { element: direct, cfi }
         showRemoveConfirm.value = true
         try {
           const doc = e.currentTarget as Document
@@ -248,13 +298,24 @@ function onIframeMouseDown(e: MouseEvent) {
       const cy = (e as any).clientY
       if (doc && typeof cx === 'number' && typeof cy === 'number') {
         try {
-          // Translate outer client coordinates into iframe-local coordinates
+          // Translate client coordinates into iframe-local coordinates while
+          // staying inside the iframe viewport so hit-testing never receives
+          // negative positions that lead to empty results.
           const win = doc.defaultView as Window | null
           const iframeEl = (win as any)?.frameElement as HTMLElement | null
           if (iframeEl) {
             const iframeRect = iframeEl.getBoundingClientRect()
-            const localX = cx - iframeRect.left
-            const localY = cy - iframeRect.top
+            let localX = typeof cx === 'number' ? cx - iframeRect.left : 0
+            let localY = typeof cy === 'number' ? cy - iframeRect.top : 0
+            if (localX < 0) localX = 0
+            if (localY < 0) localY = 0
+            try {
+              const docEl = doc.documentElement
+              const maxX = docEl?.clientWidth || iframeRect.width
+              const maxY = docEl?.clientHeight || iframeRect.height
+              if (maxX && localX > maxX) localX = Math.max(0, maxX - 1)
+              if (maxY && localY > maxY) localY = Math.max(0, maxY - 1)
+            } catch {}
             console.debug('[reader] elementFromPoint local coords', { iframeRect, localX, localY })
             // Prefer elementsFromPoint which returns all stacked elements at the
             // coordinates; scan for any element that is or contains a user
@@ -299,7 +360,7 @@ function onIframeMouseDown(e: MouseEvent) {
                     for (const cand of candidates) {
                       try {
                         const r = cand.getBoundingClientRect()
-                        if (typeof localX === 'number' && typeof localY === 'number' && localX >= r.left && localX <= r.right && localY >= r.top && localY <= r.bottom) {
+                        if (localX >= r.left && localX <= r.right && localY >= r.top && localY <= r.bottom) {
                           matched = cand
                           break
                         }
@@ -325,7 +386,8 @@ function onIframeMouseDown(e: MouseEvent) {
     const hl = findHighlightElement(searchStart)
     if (hl) {
       console.debug('[reader] highlight element matched', { tag: hl.tagName, class: hl.className, outer: (hl.outerHTML || '').slice(0,200) })
-      removePendingElement.value = hl
+      const cfi = getHighlightCfi(hl)
+      removePending.value = { element: hl, cfi }
       showRemoveConfirm.value = true
       try {
         const doc = e.currentTarget as Document
@@ -383,6 +445,7 @@ function attachIframeDocListeners() {
                 iframeWinListenerTargets.push(win)
               }
             } catch (e) { console.debug('[reader] failed to attach window listeners', e) }
+            setTimeout(() => syncHighlightAttributes(doc), 20)
           }
         }
         const doc = frame.contentDocument
@@ -638,6 +701,7 @@ async function renderEpubFromBase64(b64: string) {
     // Attach iframe listeners when a section is rendered so clicks on
     // highlights can be detected.
     setTimeout(() => attachIframeDocListeners(), 50)
+    setTimeout(() => syncHighlightAttributes(), 80)
   })
 
   rendition.on('relocated', (location: any) => {
@@ -1085,6 +1149,7 @@ function confirmHighlight() {
           const span = doc.createElement('span')
           span.className = 'user-highlight'
           span.setAttribute('data-user-highlight', '1')
+          span.setAttribute('data-annotation-cfi', cfi)
           span.style.background = '#fff176'
           span.style.color = '#000'
           span.style.pointerEvents = 'auto'
@@ -1120,23 +1185,9 @@ function confirmHighlight() {
   // Record the annotation once
   annotationsList.value.push({ cfi, text })
 
-  // Ensure any highlights present in iframe docs have the deterministic attribute
-  try {
-    const docs = iframeDocListenerTargets.length ? iframeDocListenerTargets.slice() : []
-    for (const doc of docs) {
-      try {
-        const els = Array.from(doc.querySelectorAll('.user-highlight, .highlight'))
-        for (const el of els) {
-          try {
-            if (!el.getAttribute('data-user-highlight')) {
-              el.setAttribute('data-user-highlight', '1')
-              ;(el as HTMLElement).style.pointerEvents = 'auto'
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-  } catch {}
+  // Ensure any highlights present in iframe docs keep consistent metadata.
+  syncHighlightAttributes()
+  setTimeout(() => syncHighlightAttributes(), 30)
   // Clear selection inside the iframe (if we recorded it) so the blue selection
   // is removed and only the yellow highlight remains visible.
   try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
@@ -1146,30 +1197,82 @@ function confirmHighlight() {
 
 /** Confirm and remove the pending highlighted element. */
 function confirmRemove() {
-  const el = removePendingElement.value
-  if (!el) { clearRemoveConfirm(); return }
+  const pending = removePending.value
+  if (!pending) { clearRemoveConfirm(); return }
+  const { element: el, cfi: cfiToRemove } = pending
+
   // Only allow removing elements that were explicitly marked as highlights.
   // This avoids accidentally unwrapping large structural elements.
   try {
     const hasMarker = el.getAttribute && (el.getAttribute('data-user-highlight') || el.classList?.contains('user-highlight'))
     if (!hasMarker) { clearRemoveConfirm(); return }
   } catch { clearRemoveConfirm(); return }
+
+  // First, try to remove the annotation using the epub.js API if we have a CFI.
+  // This is the most important step for clearing the library's internal state.
+  if (cfiToRemove && renditionInstance) {
+    try {
+      const ann = (renditionInstance as any).annotations
+      if (ann) {
+        console.debug('[reader] removing annotation via API with cfi', cfiToRemove)
+        try { ann.remove(cfiToRemove, 'highlight') } catch (e1) {
+          try { ann.remove(cfiToRemove) } catch (e2) {
+            try { ann.removeAnnotation(cfiToRemove) } catch (e3) {
+              console.debug('[reader] all annotation remove attempts failed', { e1, e2, e3 })
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.debug('[reader] failed to access annotation manager', e)
+    }
+  }
+
+  // Second, unwrap the highlight element so text remains but styling is gone.
   try {
-    // Unwrap the highlight element so text remains but highlight styling is gone.
     const parent = el.parentNode
     if (parent) {
       while (el.firstChild) parent.insertBefore(el.firstChild, el)
       parent.removeChild(el)
+      // Normalize the parent to merge adjacent text nodes left by the unwrap
+      try { parent.normalize() } catch {}
+      const doc = (parent as any)?.ownerDocument || (el as any)?.ownerDocument
+      if (doc) syncHighlightAttributes(doc)
     }
   } catch {}
 
-  // Remove matching entries from annotationsList (by text equality or empty cfi)
+  // Third, remove matching entries from our local annotationsList.
   try {
     const text = (el.textContent || '').trim()
-    annotationsList.value = annotationsList.value.filter((a) => a.text !== text)
+    if (text) {
+      annotationsList.value = annotationsList.value.filter((a) => {
+        const at = (a.text || '').trim()
+        if (!at) return true
+        // Also check CFI in case of identical text highlights
+        if (cfiToRemove && a.cfi === cfiToRemove) return false
+        return !(at === text || at.includes(text) || text.includes(at))
+      })
+    } else if (cfiToRemove) {
+      // Fallback to removing by CFI if text is empty
+      annotationsList.value = annotationsList.value.filter(a => a.cfi !== cfiToRemove)
+    }
   } catch {}
 
+  // Clear any selection inside the iframe so future selections are fresh
+  try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
+
   clearRemoveConfirm()
+
+  // Finally, ask the rendition to re-display the current view to ensure
+  // the DOM is clean and internal caches are updated.
+  try {
+    const cfi = currentCfi
+    if (renditionInstance && cfi) {
+      setTimeout(() => {
+        try { (renditionInstance as any).display(cfi) } catch (e) { /* ignore */ }
+      }, 50)
+    }
+  } catch {}
 }
 
 /**
