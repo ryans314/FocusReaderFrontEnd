@@ -45,14 +45,42 @@
       <span class="progress-label">{{ progressLabel }}</span>
     </div>
     <div v-if="showConfirm" class="highlight-confirm" :style="{ left: `${confirmPos.left}px`, top: `${confirmPos.top}px` }">
-      <div class="color-palette" style="display:flex; gap:.375rem;">
-        <button v-for="c in highlightColors" :key="c" class="color-button" :style="{ background: c, width: '28px', height: '28px', borderRadius: '6px', border: '1px solid #ddd' }" @click="applyHighlight(c)" :title="c"></button>
+      <!-- Stacked layout: textarea on top, colors in 1-2 rows beneath, actions below -->
+      <div style="display:flex; flex-direction:column; gap:.5rem; min-width:240px; max-width:360px;">
+        <textarea class="highlight-note-textarea" v-model="pendingNote" rows="3" placeholder="Add a note (optional)" style="width:100%; resize:vertical; font-size:.9rem;"></textarea>
+
+        <div class="color-palette" style="display:flex; flex-wrap:wrap; gap:.375rem; align-items:center;">
+          <button v-for="c in highlightColors" :key="c" class="color-button" :style="{ background: c, width: '28px', height: '28px', borderRadius: '6px', border: pendingNoteColor === c ? '2px solid #111' : '1px solid #ddd' }" @click="pendingNoteColor = c" :title="c"></button>
+        </div>
+
+        <div class="highlight-actions" style="display:flex; gap:.5rem; align-items:center;">
+          <button @click="addAnnotation">Add annotation</button>
+          <button @click="clearPendingConfirm" style="margin-left:.25rem;">Cancel</button>
+        </div>
       </div>
     </div>
     <div v-if="showRemoveConfirm" class="remove-confirm" :style="{ left: `${removeConfirmPos.left}px`, top: `${removeConfirmPos.top}px` }">
-      <button @click="confirmRemove">Remove</button>
-      <button @click="clearRemoveConfirm" style="margin-left:.25rem;">Cancel</button>
+      <template v-if="!editingAnnotation">
+        <div style="display:flex; gap:.375rem; min-width:220px;">
+          <button @click="startEditAnnotation" style="flex:1;">Edit</button>
+          <button @click="confirmRemove" style="flex:1;">Remove</button>
+        </div>
+      </template>
+      <template v-else>
+        <div style="display:flex; flex-direction:column; gap:.375rem; min-width:220px;">
+          <textarea v-model="editNote" ref="editTextarea" rows="3" placeholder="Edit note (optional)" style="width:100%; font-size:.9rem; resize:vertical;"></textarea>
+          <div style="display:flex; gap:.35rem; flex-wrap:wrap;">
+            <button v-for="c in highlightColors" :key="c" class="color-button" :style="{ background: c, width: '24px', height: '24px', borderRadius: '6px', border: editColor === c ? '2px solid #111' : '1px solid #ddd' }" @click="editColor = c" :title="c"></button>
+          </div>
+          <div style="display:flex; gap:.375rem; margin-top:.25rem;">
+            <button @click="confirmEditAnnotation" style="flex:1;">Confirm edit</button>
+            <button @click="cancelEditAnnotation" style="flex:1;">Cancel</button>
+          </div>
+        </div>
+      </template>
     </div>
+    <!-- Floating tooltip for annotation notes (positioned relative to viewport, computed from iframe coordinates) -->
+    <div v-if="tooltipVisible" class="annotation-tooltip" :style="{ left: `${tooltipPos.left}px`, top: `${tooltipPos.top}px` }">{{ tooltipText }}</div>
     <div v-if="annotationsList.length" style="width: min(88vw, 960px); align-self:center; margin-top:.5rem;">
       <strong style="display:block; margin-bottom:.25rem;">Highlights</strong>
       <ul style="margin:0; padding:0 0 0 1rem; max-height:120px; overflow:auto;">
@@ -73,7 +101,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getDocumentDetails, openDocument, closeDocument } from '@/lib/api/endpoints'
 import { storeToRefs } from 'pinia'
@@ -116,35 +144,96 @@ const locationsPerSpread = ref(1)
 
 // Simple in-memory list of user highlights for this session. Each item contains
 // the CFI range, the selected text, and an optional color. Persistence can be added later.
-const annotationsList = ref<Array<{ cfi: string; text: string; color?: string }>>([])
+const annotationsList = ref<Array<{ cfi: string; text: string; color?: string; note?: string }>>([])
 // A small Notability-like palette for users to pick highlight colors.
 const highlightColors = ['#fff176', '#ffd54f', '#ffab91', '#f48fb1', '#b39ddb', '#80cbc4', '#c5e1a5']
 const pendingHighlight = ref<{ cfi: string; text: string } | null>(null)
 let pendingSelectionWindow: Window | null = null
 const showConfirm = ref(false)
 const confirmPos = ref({ left: 0, top: 0 })
-let confirmTimer: any = null
+const pendingNote = ref('')
+// Default the selected palette color to the yellow swatch so the selection
+// indicator is visible immediately when the confirm popup appears.
+const pendingNoteColor = ref<string | null>('#fff176')
 let iframeDocListenerTargets: Document[] = []
 let iframeWinListenerTargets: Window[] = []
+// Tooltip state for showing annotation text on hover (positioned in host document)
+const tooltipVisible = ref(false)
+const tooltipText = ref('')
+const tooltipPos = ref({ left: 0, top: 0 })
 const removePending = ref<{ element: Element; cfi: string | null } | null>(null)
 const showRemoveConfirm = ref(false)
 const removeConfirmPos = ref({ left: 0, top: 0 })
+// Editing state when the user chooses to edit an existing annotation
+const editingAnnotation = ref(false)
+const editNote = ref('')
+const editColor = ref<string | null>(null)
+const editTextarea = ref<HTMLTextAreaElement | null>(null)
 
 function clearRemoveConfirm() {
   showRemoveConfirm.value = false
   removePending.value = null
   try { window.removeEventListener('mousedown', onGlobalMouseDown) } catch {}
+  // reset edit mode when closing
+  editingAnnotation.value = false
+  editNote.value = ''
+  editColor.value = null
 }
 
 function clearPendingConfirm() {
   showConfirm.value = false
   pendingHighlight.value = null
+  pendingNote.value = ''
+  pendingNoteColor.value = null
   try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
   pendingSelectionWindow = null
-  if (confirmTimer) { clearTimeout(confirmTimer); confirmTimer = null }
   try { window.removeEventListener('mousedown', onGlobalMouseDown) } catch {}
   // keep iframe listeners attached for highlight/remove interactions; they
   // will be torn down in cleanup when the rendition is destroyed.
+}
+
+function showTooltipForIframeElement(el: Element | null) {
+  try {
+    if (!el) { tooltipVisible.value = false; return }
+    // Prefer the in-memory annotation text (so multiline/newlines are preserved).
+    // Fall back to the element attribute when necessary.
+    let note = ''
+    try {
+      const cfi = getHighlightCfi(el)
+      if (cfi) {
+        const match = annotationsList.value.find(a => a.cfi === cfi)
+        if (match && match.note) note = match.note
+      }
+    } catch {}
+    if (!note) {
+      try { note = (el.getAttribute && el.getAttribute('data-annotation-note')) || '' } catch {}
+    }
+    if (!note) { tooltipVisible.value = false; return }
+
+    // Compute position relative to host document using iframe frameElement
+    const doc = (el as any).ownerDocument as Document | null
+    const win = doc?.defaultView as Window | null
+    const iframeEl = (win as any)?.frameElement as HTMLElement | null
+    const elRect = el.getBoundingClientRect()
+    if (!iframeEl) {
+      // fallback: position near element's rect in global coords
+      tooltipPos.value.left = Math.max(8, elRect.left)
+      tooltipPos.value.top = Math.max(8, elRect.top - 28)
+    } else {
+      const iframeRect = iframeEl.getBoundingClientRect()
+      // position tooltip above the element inside the iframe
+      tooltipPos.value.left = Math.max(8, iframeRect.left + elRect.left)
+      tooltipPos.value.top = Math.max(8, iframeRect.top + elRect.top - 36)
+    }
+    tooltipText.value = note
+    tooltipVisible.value = true
+  } catch (err) {
+    tooltipVisible.value = false
+  }
+}
+
+function hideTooltip() {
+  tooltipVisible.value = false
 }
 
 function onGlobalMouseDown(e: MouseEvent) {
@@ -250,7 +339,16 @@ function syncHighlightAttributes(targetDoc?: Document) {
               try { (el as HTMLElement).style.color = getContrastColor(colorVal) } catch {}
             } catch {}
           }
-          if (existingCfi) continue
+          // Also set note attribute when we have a matching annotation with text
+          if (existingCfi) {
+            try {
+              const match = annotationsList.value.find(a => a.cfi === existingCfi)
+              if (match && match.note) {
+                try { el.setAttribute('data-annotation-note', match.note) } catch {}
+              }
+            } catch {}
+            continue
+          }
           const text = (el.textContent || '').trim()
           if (!text) continue
           const cfi = textToCfi.get(text)
@@ -416,30 +514,60 @@ function onIframeMouseDown(e: MouseEvent) {
               if (precise) matched = precise
             }
             if (matched) {
+              // Verify the matched element is actually at the precise point we
+              // queried. elementsFromPoint can return stacked elements; prefer
+              // the element directly under the coordinates or a closely
+              // related ancestor/descendant. This avoids selecting highlights
+              // that are present elsewhere in the same section.
+              try {
+                const precise = (doc as Document).elementFromPoint(localX, localY)
+                if (precise && precise !== matched) {
+                  // accept matched only if it's the precise element or closely
+                  // related (ancestor/descendant) to the precise element.
+                  if (!(matched.contains(precise) || precise.contains(matched))) {
+                    // not related; treat as no match so later fallback can run
+                    matched = null
+                  }
+                }
+              } catch (err) {
+                // if elementFromPoint fails, continue with matched
+              }
+              if (!matched) {
+                // fallback: prefer the precise element from elementFromPoint
+                try {
+                  const precise2 = (doc as Document).elementFromPoint(localX, localY)
+                  if (precise2) matched = precise2
+                } catch {}
+              }
               // If the matched element isn't itself a highlight marker, try
               // searching its descendants for highlight elements whose
               // bounding box contains the local click coordinates. This
               // handles cases where the highlight span is nested inside a
               // block-level parent that elementFromPoint returns.
-              try {
-                const isDirect = matched.getAttribute && (matched.getAttribute('data-user-highlight') || matched.classList?.contains('user-highlight') || matched.className?.includes('highlight'))
-                if (!isDirect) {
-                  try {
-                    const candidates = Array.from((matched as Element).querySelectorAll('[data-user-highlight], .user-highlight, .highlight'))
-                    for (const cand of candidates) {
-                      try {
-                        const r = cand.getBoundingClientRect()
-                        if (localX >= r.left && localX <= r.right && localY >= r.top && localY <= r.bottom) {
-                          matched = cand
-                          break
-                        }
-                      } catch {}
-                    }
-                  } catch {}
-                }
-              } catch {}
-              console.debug('[reader] hit-test matched element', { tag: matched.tagName, class: matched.className })
-              searchStart = matched as Node
+              // Use a local variable to avoid TS 'possibly null' issues and to
+              // allow replacing matched with a candidate descendant if needed.
+              let matchedEl = matched as Element | null
+              if (matchedEl) {
+                try {
+                  const isDirect = matchedEl.getAttribute && (matchedEl.getAttribute('data-user-highlight') || matchedEl.classList?.contains('user-highlight') || matchedEl.className?.includes('highlight'))
+                  if (!isDirect) {
+                    try {
+                      const candidates = Array.from(matchedEl.querySelectorAll('[data-user-highlight], .user-highlight, .highlight'))
+                      for (const cand of candidates) {
+                        try {
+                          const r = cand.getBoundingClientRect()
+                          if (localX >= r.left && localX <= r.right && localY >= r.top && localY <= r.bottom) {
+                            matchedEl = cand
+                            break
+                          }
+                        } catch {}
+                      }
+                    } catch {}
+                  }
+                } catch {}
+                try { console.debug('[reader] hit-test matched element', { tag: matchedEl.tagName, class: matchedEl.className }) } catch {}
+                searchStart = matchedEl as Node
+              }
             }
           } else {
             // fallback to using doc.elementFromPoint with global coords (may be off)
@@ -458,6 +586,47 @@ function onIframeMouseDown(e: MouseEvent) {
       const cfi = getHighlightCfi(hl)
       removePending.value = { element: hl, cfi }
       showRemoveConfirm.value = true
+        // populate edit fields with existing annotation values so the Edit flow
+        // starts with current values
+        try {
+          editingAnnotation.value = false
+          // Try several strategies to find the existing note/color: by CFI,
+          // by element attribute, then by matching annotation text.
+          let foundNote: string | undefined = undefined
+          let foundColor: string | null = null
+          try {
+            const match = annotationsList.value.find(a => a.cfi === cfi)
+            if (match) {
+              foundNote = match.note
+              foundColor = match.color || null
+            }
+          } catch {}
+
+          // If not found via CFI, try reading attributes from the element
+          if (!foundNote) {
+            try { foundNote = hl.getAttribute?.('data-annotation-note') || undefined } catch {}
+          }
+          if (!foundColor) {
+            try { foundColor = hl.getAttribute?.('data-annotation-color') || null } catch {}
+          }
+
+          // As a last resort, try matching annotationsList by text content
+          if (!foundNote || foundNote === '') {
+            try {
+              const text = (hl.textContent || '').trim()
+              if (text) {
+                const byText = annotationsList.value.find(a => (a.text || '').trim() === text || (a.text || '').includes(text) || text.includes((a.text || '').trim()))
+                if (byText) {
+                  if (!foundNote) foundNote = byText.note
+                  if (!foundColor) foundColor = byText.color || null
+                }
+              }
+            } catch {}
+          }
+
+          editNote.value = (foundNote || '')
+          editColor.value = foundColor || null
+        } catch {}
       try {
         const doc = e.currentTarget as Document
         const win = doc?.defaultView
@@ -485,6 +654,35 @@ function onIframeMouseDown(e: MouseEvent) {
   }
 }
 
+function onIframePointerOver(e: PointerEvent) {
+  try {
+    const node = e.target as Node | null
+    if (!node) return
+    // find the highlight element starting from the event target
+    const hl = findHighlightElement(node)
+    if (!hl) { hideTooltip(); return }
+    // Show tooltip only if annotation has note text
+    const note = (hl.getAttribute && hl.getAttribute('data-annotation-note')) || ''
+    if (note) {
+      showTooltipForIframeElement(hl)
+    } else {
+      hideTooltip()
+    }
+  } catch (err) {
+    hideTooltip()
+  }
+}
+
+function onIframePointerOut(e: PointerEvent) {
+  try {
+    // pointerout may include relatedTarget; if leaving into another highlight,
+    // let the pointerover handler show the new tooltip. For simplicity, hide on out.
+    hideTooltip()
+  } catch {
+    hideTooltip()
+  }
+}
+
 function attachIframeDocListeners() {
   try {
     const iframes = readerEl.value?.querySelectorAll('iframe') || []
@@ -502,6 +700,9 @@ function attachIframeDocListeners() {
             // pointer events can be more reliable in some user agents; attach them too
             try { doc.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
             try { doc.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
+            // Hover handlers for annotation note tooltip
+            try { doc.addEventListener('pointerover', onIframePointerOver, true) } catch {}
+            try { doc.addEventListener('pointerout', onIframePointerOut, true) } catch {}
             iframeDocListenerTargets.push(doc)
             try {
               const win = doc.defaultView
@@ -540,6 +741,8 @@ function detachAllIframeDocListeners() {
   try { doc.removeEventListener('click', onIframeMouseDown) } catch {}
   try { doc.removeEventListener('pointerdown', onIframeMouseDown) } catch {}
   try { doc.removeEventListener('pointerup', onIframeMouseDown) } catch {}
+  try { doc.removeEventListener('pointerover', onIframePointerOver) } catch {}
+  try { doc.removeEventListener('pointerout', onIframePointerOut) } catch {}
     }
   } catch {}
   iframeDocListenerTargets.length = 0
@@ -751,8 +954,7 @@ async function renderEpubFromBase64(b64: string) {
           // or open the remove popup when clicking a highlight.
           attachIframeDocListeners()
         } catch {}
-        if (confirmTimer) { clearTimeout(confirmTimer) }
-        confirmTimer = setTimeout(() => clearPendingConfirm(), 6000)
+        
       } catch (err) {
         // ignore selection errors
       }
@@ -1209,10 +1411,10 @@ function goToAnnotation(cfi: string) {
 }
 
 /** User confirmed creating the pending highlight; apply and record it. */
-function confirmHighlight(color?: string) {
+function confirmHighlight(color?: string, note?: string) {
   if (!pendingHighlight.value || !renditionInstance) { clearPendingConfirm(); return }
   const { cfi, text } = pendingHighlight.value
-  const chosenColor = color || '#fff176'
+  const chosenColor = color || pendingNoteColor.value || '#fff176'
   // Try to wrap the selection in the iframe first. If that succeeds
   // we will skip calling epub.js annotation APIs to avoid duplicate
   // highlights. This is best-effort and may silently fail on complex DOM.
@@ -1229,6 +1431,7 @@ function confirmHighlight(color?: string) {
           span.className = 'user-highlight'
           span.setAttribute('data-user-highlight', '1')
           span.setAttribute('data-annotation-cfi', cfi)
+              if (note) span.setAttribute('data-annotation-note', note)
           span.style.background = chosenColor
           // choose a readable text color against the chosen background
           try { span.style.color = getContrastColor(chosenColor) } catch { span.style.color = '#000' }
@@ -1262,8 +1465,10 @@ function confirmHighlight(color?: string) {
     }
   }
 
-  // Record the annotation once (including chosen color)
-  annotationsList.value.push({ cfi, text, color: chosenColor })
+  // Record the annotation once (including chosen color and optional note)
+  const ann: { cfi: string; text: string; color?: string; note?: string } = { cfi, text, color: chosenColor }
+  if (note) ann.note = note
+  annotationsList.value.push(ann)
 
   // Ensure any highlights present in iframe docs keep consistent metadata.
   syncHighlightAttributes()
@@ -1276,8 +1481,14 @@ function confirmHighlight(color?: string) {
 }
 
 /** Helper invoked by color buttons in the confirm popup. */
-function applyHighlight(color: string) {
-  try { confirmHighlight(color) } catch { clearPendingConfirm() }
+function addAnnotation() {
+  try {
+    const note = (pendingNote.value || '').trim()
+    const color = pendingNoteColor.value || undefined
+    confirmHighlight(color, note || undefined)
+  } catch (e) {
+    clearPendingConfirm()
+  }
 }
 
 /** Confirm and remove the pending highlighted element. */
@@ -1358,6 +1569,89 @@ function confirmRemove() {
       }, 50)
     }
   } catch {}
+}
+
+function startEditAnnotation() {
+  try {
+    if (!removePending.value) return
+    editingAnnotation.value = true
+    // autofocus the textarea after it is rendered
+    try {
+      nextTick(() => {
+        const el = editTextarea.value
+        if (el) {
+          el.focus()
+          try { const len = el.value.length; el.setSelectionRange(len, len) } catch {}
+        }
+      })
+    } catch {}
+  } catch {}
+}
+
+function cancelEditAnnotation() {
+  // cancel editing and close the popup
+  editingAnnotation.value = false
+  clearRemoveConfirm()
+}
+
+function confirmEditAnnotation() {
+  const pending = removePending.value
+  if (!pending) { clearRemoveConfirm(); return }
+  const { element: el, cfi: cfiToEdit } = pending
+  try {
+    const color = editColor.value || undefined
+    const note = (editNote.value || '').trim() || undefined
+
+    // Update DOM element styling and attributes immediately for instant feedback
+    try {
+      if (el && el instanceof HTMLElement) {
+        if (color) {
+          el.style.background = color
+          try { el.style.color = getContrastColor(color) } catch {}
+          try { el.setAttribute('data-annotation-color', color) } catch {}
+        } else {
+          try { el.removeAttribute('data-annotation-color') } catch {}
+          el.style.background = ''
+        }
+        if (note) {
+          try { el.setAttribute('data-annotation-note', note) } catch {}
+        } else {
+          try { el.removeAttribute('data-annotation-note') } catch {}
+        }
+      }
+    } catch {}
+
+    // Update our in-memory annotations list
+    try {
+      let found = false
+      annotationsList.value = annotationsList.value.map(a => {
+        if (cfiToEdit && a.cfi === cfiToEdit) {
+          found = true
+          return { ...a, color: color, note: note }
+        }
+        return a
+      })
+      // If not found by CFI, try matching by text and update the first match
+      if (!found && el) {
+        const text = (el.textContent || '').trim()
+        if (text) {
+          for (let i = 0; i < annotationsList.value.length; i++) {
+            if ((annotationsList.value[i].text || '').trim() === text) {
+              annotationsList.value[i] = { ...annotationsList.value[i], color: color, note: note }
+              break
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Re-sync attributes across iframes
+    try { syncHighlightAttributes() } catch {}
+  } catch (err) {
+    // ignore edit errors
+  } finally {
+    clearRemoveConfirm()
+  }
 }
 
 /**
@@ -1530,4 +1824,21 @@ function onKeyDown(event: KeyboardEvent) {
 .color-button:focus {
   outline: 2px solid #2563eb33;
 }
+
+.annotation-tooltip {
+  position: fixed;
+  z-index: 1100; /* below remove-confirm (1200) so remove popup remains on top */
+  max-width: 320px;
+  background: rgba(20,20,20,0.9);
+  color: #fff;
+  padding: .4rem .6rem;
+  border-radius: .375rem;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  font-size: .9rem;
+  pointer-events: none; /* do not block pointer events to underlying content */
+  white-space: pre-wrap; /* preserve newlines and spacing in annotation text */
+  word-break: break-word;
+}
+
+
 </style>
