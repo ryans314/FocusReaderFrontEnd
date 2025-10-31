@@ -151,6 +151,18 @@ export async function createAnnotation(payload: {
   return data
 }
 
+// Front-end convenience: register a document with the Annotation concept so
+// the backend will accept subsequent annotation creates. This is a temporary
+// "front-end sync" until the backend performs this automatically.
+export async function registerDocumentWithAnnotationConcept(creatorId: ID, documentId: ID) {
+  // Matches API spec: POST /api/Annotation/registerDocument with { documentId, creatorId }
+  const { data } = await api.post<Record<string, never> | { error: string }>(
+    '/api/Annotation/registerDocument',
+    { documentId, creatorId }
+  )
+  return data
+}
+
 export async function deleteAnnotation(user: ID, annotation: ID) {
   const { data } = await api.post<Empty | { error: string }>(
     '/api/Annotation/deleteAnnotation',

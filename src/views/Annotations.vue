@@ -34,7 +34,7 @@
 import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
-import { createAnnotation, searchAnnotations } from '@/lib/api/endpoints'
+import { createAnnotation, searchAnnotations, registerDocumentWithAnnotationConcept } from '@/lib/api/endpoints'
 import type { Annotation } from '@/lib/api/types'
 
 const auth = useAuthStore()
@@ -54,6 +54,14 @@ async function createAnno() {
   if (!userId.value) return
   error.value = ''
   try {
+    // FRONT-END SYNC: ensure Annotation concept knows about this document
+    // (temporary client-side registration until backend sync is in place)
+    try {
+      await registerDocumentWithAnnotationConcept(userId.value, docId.value)
+    } catch (err) {
+      console.debug('[annotations] registerDocumentWithAnnotationConcept failed', err)
+    }
+
     const res = await createAnnotation({
       creator: userId.value,
       document: docId.value,

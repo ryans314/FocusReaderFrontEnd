@@ -103,7 +103,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getDocumentDetails, openDocument, closeDocument } from '@/lib/api/endpoints'
+import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, registerDocumentWithAnnotationConcept, searchAnnotations } from '@/lib/api/endpoints'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import ePub from 'epubjs'
@@ -144,7 +144,10 @@ const locationsPerSpread = ref(1)
 
 // Simple in-memory list of user highlights for this session. Each item contains
 // the CFI range, the selected text, and an optional color. Persistence can be added later.
-const annotationsList = ref<Array<{ cfi: string; text: string; color?: string; note?: string }>>([])
+// annotationsList stores session-visible annotations. When persisted, items
+// may include an `id` field returned by the backend so future edits/deletes
+// can be sent to the server.
+const annotationsList = ref<Array<{ id?: string; cfi: string; text: string; color?: string; note?: string }>>([])
 // A small Notability-like palette for users to pick highlight colors.
 const highlightColors = ['#fff176', '#ffd54f', '#ffab91', '#f48fb1', '#b39ddb', '#80cbc4', '#c5e1a5']
 const pendingHighlight = ref<{ cfi: string; text: string } | null>(null)
@@ -169,6 +172,7 @@ const editingAnnotation = ref(false)
 const editNote = ref('')
 const editColor = ref<string | null>(null)
 const editTextarea = ref<HTMLTextAreaElement | null>(null)
+const annotationAttachTimers = new Map<string, number>()
 
 function clearRemoveConfirm() {
   showRemoveConfirm.value = false
@@ -313,51 +317,855 @@ function getHighlightCfi(el: Element | null): string | null {
 
 function syncHighlightAttributes(targetDoc?: Document) {
   try {
-    const docs = targetDoc ? [targetDoc] : (iframeDocListenerTargets.length ? iframeDocListenerTargets.slice() : [])
+    // Include host document to catch epub.js SVG overlays placed outside iframes
+    const docs = targetDoc
+      ? [targetDoc]
+      : [document, ...(iframeDocListenerTargets.length ? iframeDocListenerTargets.slice() : [])]
     if (!docs.length) return
     const textToCfi = new Map<string, string>()
-    const cfiToColor = new Map<string, string>()
+    // Map multiple normalized CFI variants to color/note so epub.js attribute styles are matched
+    const cfiVariantToMeta = new Map<string, { color?: string; note?: string; canonical: string }>()
+    const canonicalToAnn = new Map<string, { id?: string; cfi: string; text: string; note?: string; color?: string }>()
     for (const ann of annotationsList.value) {
       try {
         const text = (ann.text || '').trim()
         if (text && !textToCfi.has(text)) textToCfi.set(text, ann.cfi)
-        if (ann.cfi && ann.color) cfiToColor.set(ann.cfi, ann.color)
+        const variants = generateCfiVariants(ann.cfi)
+        for (const v of variants) {
+          cfiVariantToMeta.set(v, { color: ann.color, note: ann.note, canonical: normalizeCfi(ann.cfi) })
+        }
+        canonicalToAnn.set(normalizeCfi(ann.cfi), ann)
       } catch {}
     }
     for (const doc of docs) {
       if (!doc) continue
-      const elements = Array.from(doc.querySelectorAll('[data-user-highlight], .user-highlight, [data-annotation-cfi], [data-epubcfi], [data-cfi]')) as Element[]
+      const seenCanonical = new Set<string>()
+      const elements = Array.from(doc.querySelectorAll('[data-user-highlight], .user-highlight, .epubjs-hl, [data-annotation-cfi], [data-epubcfi], [data-cfi]')) as Element[]
       for (const el of elements) {
         try {
           if (!el.getAttribute('data-user-highlight')) el.setAttribute('data-user-highlight', '1')
           ;(el as HTMLElement).style.pointerEvents = 'auto'
-          const existingCfi = getHighlightCfi(el)
-          if (existingCfi && cfiToColor.has(existingCfi)) {
-            try {
-              const colorVal: string = (cfiToColor.get(existingCfi) || '') as string
-              (el as HTMLElement).style.background = colorVal
-              try { (el as HTMLElement).style.color = getContrastColor(colorVal) } catch {}
-            } catch {}
-          }
-          // Also set note attribute when we have a matching annotation with text
-          if (existingCfi) {
-            try {
-              const match = annotationsList.value.find(a => a.cfi === existingCfi)
-              if (match && match.note) {
-                try { el.setAttribute('data-annotation-note', match.note) } catch {}
+          const existingCfiRaw = getHighlightCfi(el)
+          if (existingCfiRaw) {
+            const norm = normalizeCfi(existingCfiRaw)
+            if (norm) seenCanonical.add(norm)
+            // Set/normalize our canonical attribute so later handlers work consistently
+            try { el.setAttribute('data-annotation-cfi', norm) } catch {}
+            const meta = cfiVariantToMeta.get(norm) || cfiVariantToMeta.get(existingCfiRaw) || cfiVariantToMeta.get(`epubcfi(${norm})`)
+            if (meta) {
+              if (meta.color) {
+                try { el.setAttribute('data-annotation-color', meta.color) } catch {}
+                try { (el as HTMLElement).style.background = meta.color } catch {}
+                try { (el as HTMLElement).style.color = getContrastColor(meta.color) } catch {}
               }
-            } catch {}
-            continue
+              if (meta.note) {
+                try { el.setAttribute('data-annotation-note', meta.note) } catch {}
+              }
+              continue
+            }
           }
           const text = (el.textContent || '').trim()
           if (!text) continue
           const cfi = textToCfi.get(text)
-          if (cfi) el.setAttribute('data-annotation-cfi', cfi)
+          if (cfi) el.setAttribute('data-annotation-cfi', normalizeCfi(cfi))
         } catch {}
       }
     }
   } catch (err) {
     console.debug('[reader] syncHighlightAttributes failed', err)
+  }
+}
+
+/**
+ * Fetch persisted annotations for the current user+document and render them.
+ */
+async function loadPersistedAnnotations() {
+  try {
+    if (!userId.value || !documentId || !renditionInstance) return
+    // Make sure iframe listeners are attached so we can find highlight nodes
+    // inside each iframe document. attachIframeDocListeners is idempotent.
+    try { attachIframeDocListeners() } catch {}
+
+    const res = await searchAnnotations(userId.value, documentId, '')
+    if (!res) return
+    if ('error' in res) return
+    const anns = Array.isArray(res) ? (res[0]?.annotations ?? []) : ((res as any)?.annotations ?? [])
+    if (!Array.isArray(anns) || anns.length === 0) return
+
+    for (const a of anns) {
+      const id = a._id || a.id || a.annotation?.id
+      const cfi = a.location || a.cfi || a.annotation?.location
+      const color = a.color || a.annotation?.color
+      const content = a.content ?? a.annotation?.content ?? ''
+      if (!cfi) continue
+
+      // avoid duplicating existing entries
+      if (annotationsList.value.some(x => (id && x.id === id) || x.cfi === cfi)) continue
+
+      const note = typeof content === 'string' && content.trim() ? content.trim() : undefined
+      const highlightText = ((a as any)?.text || (a as any)?.annotation?.text || '').trim()
+      const item = {
+        id,
+        cfi,
+        text: highlightText || note || '',
+        note,
+        color: color || undefined
+      }
+      annotationsList.value.push(item)
+
+      // Do not add epub.js overlay highlights for persisted annotations; we render
+      // interactive spans directly from CFIs for accurate placement and interactivity.
+
+      // After a short delay (allow epub.js to insert the nodes), ensure
+      // the created DOM elements inside each iframe receive our attributes
+      // (data-annotation-note, data-annotation-color, data-annotation-cfi)
+      // so tooltip, edit and remove flows can find them.
+      scheduleAnnotationAttributeAttach(item)
+    }
+
+    // ensure DOM nodes receive our data attributes and colors (additional sync)
+    setTimeout(() => syncHighlightAttributes(), 200)
+  } catch (err) {
+    console.debug('[reader] loadPersistedAnnotations failed', err)
+  }
+}
+
+function scheduleAnnotationAttributeAttach(ann: { id?: string; cfi: string; text: string; note?: string; color?: string }, attempt = 0) {
+  try {
+    if (!ann || !ann.cfi) return
+    const key = ann.id || `${ann.cfi}::${ann.text || ''}::${ann.note || ''}`
+    const maxAttempts = 7
+    const baseDelay = attempt === 0 ? 80 : 140 + attempt * 160
+    const delay = Math.min(baseDelay, 900)
+    const existing = annotationAttachTimers.get(key)
+    if (typeof existing === 'number') clearTimeout(existing)
+    const timer = window.setTimeout(() => {
+      annotationAttachTimers.delete(key)
+      let success = false
+      try {
+        success = applyAnnotationAttributesToIframes(ann)
+      } catch (err) {
+        console.debug('[reader] applyAnnotationAttributesToIframes threw during schedule', err)
+      }
+      if (!success && attempt + 1 < maxAttempts) {
+        scheduleAnnotationAttributeAttach(ann, attempt + 1)
+      } else if (success) {
+        try { syncHighlightAttributes() } catch {}
+      }
+    }, delay)
+    annotationAttachTimers.set(key, timer)
+  } catch (err) {
+    console.debug('[reader] scheduleAnnotationAttributeAttach failed', err)
+  }
+}
+
+/**
+ * Walk each iframe document and attach attributes/styles for a single annotation.
+ * Ensures programmatic highlights get data-annotation-note and color so
+ * hover/edit/remove logic can find and operate on them.
+ */
+function applyAnnotationAttributesToIframes(ann: { id?: string; cfi: string; text: string; note?: string; color?: string }): boolean {
+  try {
+    if (!readerEl.value) return false
+    const frames = Array.from(readerEl.value.querySelectorAll('iframe')) as HTMLIFrameElement[]
+    let updated = false
+    for (const frame of frames) {
+      try {
+        const doc = frame.contentDocument
+        if (!doc) continue
+
+
+        const els = findAnnotationElementsInDocument(doc, ann)
+        if (!els.length) continue
+
+        for (const el of els) {
+          try {
+            if (!el.getAttribute('data-user-highlight')) el.setAttribute('data-user-highlight', '1')
+            try { el.classList?.add('user-highlight') } catch {}
+            if (ann.cfi) el.setAttribute('data-annotation-cfi', ann.cfi)
+            if (ann.id) {
+              try { el.setAttribute('data-annotation-id', ann.id) } catch {}
+            }
+            if (ann.note) el.setAttribute('data-annotation-note', ann.note)
+            else try { el.removeAttribute('data-annotation-note') } catch {}
+            if (ann.color) {
+              el.setAttribute('data-annotation-color', ann.color)
+              try { (el as HTMLElement).style.background = ann.color } catch {}
+              try { (el as HTMLElement).style.color = getContrastColor(ann.color) } catch {}
+            } else {
+              try { el.removeAttribute('data-annotation-color') } catch {}
+              try { (el as HTMLElement).style.background = '' } catch {}
+            }
+            try { (el as HTMLElement).style.pointerEvents = 'auto' } catch {}
+            updated = true
+          } catch {}
+        }
+      } catch {}
+    }
+    return updated
+  } catch (err) {
+    console.debug('[reader] applyAnnotationAttributesToIframes error', err)
+    return false
+  }
+}
+
+/** Ensure annotations for the currently visible chapter(s) are rendered in their iframe docs.
+ * Runs on section render and on each relocation so persisted annotations show up reliably.
+ */
+function ensureCurrentSectionAnnotations() {
+  try {
+    const iframes = readerEl.value?.querySelectorAll('iframe') || []
+    const docs: Document[] = []
+    ;(Array.from(iframes) as HTMLIFrameElement[]).forEach((iframe) => {
+      try {
+        const d = iframe.contentDocument
+        if (d) docs.push(d)
+      } catch {}
+    })
+    if (!docs.length) return
+
+    const anns = Array.isArray(annotationsList.value) ? annotationsList.value : []
+    for (const doc of docs) {
+      for (const ann of anns) {
+        try {
+          if (!ann || !ann.cfi) continue
+          // Only attempt annotations whose base id exists in this doc
+          let baseId: string | null | undefined = undefined
+          try {
+            const det = parseDetailedCfi(ann.cfi)
+            baseId = det.baseId || parseLooseEpubCfi(ann.cfi).id
+          } catch {}
+          if (!baseId) continue
+          if (!doc.getElementById(baseId)) continue
+
+          // If not already present, try to render from CFI
+          let present: Element[] = []
+          try { present = findAnnotationElementsInDocument(doc, ann) } catch {}
+          if (!present || present.length === 0) {
+            const created = tryRenderHighlightFromCfi(doc, ann as any)
+            if (created) {
+              try { created.setAttribute('data-annotation-cfi', normalizeCfi(ann.cfi)) } catch {}
+              if ((ann as any).id) { try { created.setAttribute('data-annotation-id', (ann as any).id) } catch {} }
+              if ((ann as any).note) { try { created.setAttribute('data-annotation-note', (ann as any).note) } catch {} }
+              if ((ann as any).color) {
+                try {
+                  ;(created as HTMLElement).style.background = (ann as any).color
+                  ;(created as HTMLElement).style.color = getContrastColor((ann as any).color)
+                  created.setAttribute('data-annotation-color', (ann as any).color)
+                } catch {}
+              }
+              try { (created as HTMLElement).style.pointerEvents = 'auto' } catch {}
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
+/** Update all visible DOM elements that represent an annotation (by id or CFI)
+ * to reflect new color/note values immediately across iframes.
+ */
+function updateAnnotationElementsInDocs(target: { id?: string | null; cfi?: string | null }, updates: { color?: string | null; note?: string | null }) {
+  try {
+    const normCfi = target.cfi ? normalizeCfi(target.cfi) : ''
+    const iframes = readerEl.value?.querySelectorAll('iframe') || []
+    const docs: Document[] = []
+    ;(Array.from(iframes) as HTMLIFrameElement[]).forEach((iframe) => {
+      try { const d = iframe.contentDocument; if (d) docs.push(d) } catch {}
+    })
+    const applyToEl = (el: Element) => {
+      try {
+        if (target.id) { try { el.setAttribute('data-annotation-id', target.id) } catch {} }
+        const color = updates.color ?? null
+        const note = (updates.note ?? '') as string | null
+        if (color) {
+          try { el.setAttribute('data-annotation-color', color) } catch {}
+          try { (el as HTMLElement).style.background = color } catch {}
+          try { (el as HTMLElement).style.color = getContrastColor(color) } catch {}
+        } else {
+          try { el.removeAttribute('data-annotation-color') } catch {}
+          try { (el as HTMLElement).style.background = '' } catch {}
+        }
+        if (note && note.trim()) {
+          try { el.setAttribute('data-annotation-note', note) } catch {}
+        } else {
+          try { el.removeAttribute('data-annotation-note') } catch {}
+        }
+        try { (el as HTMLElement).style.pointerEvents = 'auto' } catch {}
+      } catch {}
+    }
+    for (const doc of docs) {
+      try {
+        const candidates: Element[] = []
+        if (target.id) {
+          try { candidates.push(...Array.from(doc.querySelectorAll(`[data-annotation-id="${CSS.escape(target.id)}"]`))) } catch {}
+        }
+        if (normCfi) {
+          try {
+            const els = Array.from(doc.querySelectorAll('[data-annotation-cfi]')) as Element[]
+            for (const el of els) {
+              const val = el.getAttribute('data-annotation-cfi') || ''
+              if (val && normalizeCfi(val) === normCfi) candidates.push(el)
+            }
+          } catch {}
+        }
+        // Also update epubjs-hl or generic highlight spans that carry CFI in various attrs
+        if (!target.id && normCfi) {
+          try {
+            const altEls = Array.from(doc.querySelectorAll('[data-epubcfi], [data-cfi], [data-ePubCFI]')) as Element[]
+            for (const el of altEls) {
+              const v = el.getAttribute('data-epubcfi') || el.getAttribute('data-cfi') || el.getAttribute('data-ePubCFI') || ''
+              if (v && normalizeCfi(v) === normCfi) candidates.push(el)
+            }
+          } catch {}
+        }
+        if (candidates.length) {
+          const seen = new Set<Element>()
+          for (const el of candidates) {
+            if (seen.has(el)) continue
+            seen.add(el)
+            applyToEl(el)
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
+/** Remove all visible DOM elements that represent an annotation (by id or CFI)
+ * across iframes by unwrapping their content and normalizing parents.
+ */
+function removeAnnotationElementsInDocs(target: { id?: string | null; cfi?: string | null }) {
+  try {
+    const normCfi = target.cfi ? normalizeCfi(target.cfi) : ''
+    const iframes = readerEl.value?.querySelectorAll('iframe') || []
+    const docs: Document[] = []
+    ;(Array.from(iframes) as HTMLIFrameElement[]).forEach((iframe) => {
+      try { const d = iframe.contentDocument; if (d) docs.push(d) } catch {}
+    })
+    const unwrapEl = (el: Element) => {
+      try {
+        const parent = el.parentNode
+        if (!parent) return
+        while (el.firstChild) parent.insertBefore(el.firstChild, el)
+        parent.removeChild(el)
+        try { (parent as any).normalize?.() } catch {}
+      } catch {}
+    }
+    for (const doc of docs) {
+      try {
+        const candidates: Element[] = []
+        if (target.id) {
+          try { candidates.push(...Array.from(doc.querySelectorAll(`[data-annotation-id="${CSS.escape(target.id)}"]`))) } catch {}
+        }
+        if (normCfi) {
+          try {
+            const els = Array.from(doc.querySelectorAll('[data-annotation-cfi], [data-epubcfi], [data-cfi], [data-ePubCFI]')) as Element[]
+            for (const el of els) {
+              const v = el.getAttribute('data-annotation-cfi') || el.getAttribute('data-epubcfi') || el.getAttribute('data-cfi') || el.getAttribute('data-ePubCFI') || ''
+              if (v && normalizeCfi(v) === normCfi) candidates.push(el)
+            }
+          } catch {}
+        }
+        if (!candidates.length) continue
+        const seen = new Set<Element>()
+        for (const el of candidates) {
+          if (seen.has(el)) continue
+          seen.add(el)
+          unwrapEl(el)
+        }
+        try { syncHighlightAttributes(doc) } catch {}
+      } catch {}
+    }
+  } catch {}
+}
+
+function findAnnotationElementsInDocument(doc: Document, ann: { id?: string; cfi: string; text: string; note?: string; color?: string }): Element[] {
+  const found: Element[] = []
+  const seen = new Set<Element>()
+  const push = (el: Element | null | undefined) => {
+    if (!el || seen.has(el)) return
+    seen.add(el)
+    found.push(el)
+  }
+
+  try {
+    const cfiVariants = generateCfiVariants(ann.cfi)
+    const attrNames = ['data-annotation-cfi', 'data-epubcfi', 'data-cfi', 'data-ePubCFI']
+    for (const attr of attrNames) {
+      try {
+        const elements = Array.from(doc.querySelectorAll(`[${attr}]`)) as Element[]
+        for (const el of elements) {
+          const value = el.getAttribute(attr)
+          if (value && cfiMatches(value, cfiVariants)) push(el)
+        }
+      } catch {}
+    }
+
+    if (ann.id) {
+      try {
+        const elements = Array.from(doc.querySelectorAll('[data-annotation-id]')) as Element[]
+        for (const el of elements) {
+          const value = el.getAttribute('data-annotation-id')
+          if (value && value === ann.id) push(el)
+        }
+      } catch {}
+    }
+
+    if (!found.length && cfiVariants.length) {
+      try {
+        const elements = Array.from(doc.querySelectorAll('[data-annotation]')) as Element[]
+        for (const el of elements) {
+          const raw = el.getAttribute('data-annotation') || ''
+          if (!raw) continue
+          let parsed: any = null
+          try { parsed = JSON.parse(raw) } catch {}
+          if (parsed && parsed.cfi && cfiMatches(String(parsed.cfi), cfiVariants)) {
+            push(el)
+            continue
+          }
+          if (cfiVariants.some((variant) => raw.includes(variant))) push(el)
+        }
+      } catch {}
+    }
+
+    const textCandidates = Array.from(new Set([ann.text, ann.note].filter((v): v is string => typeof v === 'string' && v.trim().length > 0)))
+
+    if (!found.length && textCandidates.length) {
+      const selector = '[data-user-highlight], .user-highlight, .highlight, .epubjs-hl'
+      try {
+        const elements = Array.from(doc.querySelectorAll(selector)) as Element[]
+        for (const el of elements) {
+          const text = el.textContent || ''
+          if (!text) continue
+          if (textCandidates.some(candidate => textsRoughlyEqual(text, candidate))) push(el)
+        }
+      } catch {}
+    }
+
+    if (!found.length && textCandidates.length) {
+      for (const candidate of textCandidates) {
+        try {
+          const wrapped = tryWrapTextInDocument(doc, candidate)
+          if (wrapped) {
+            push(wrapped)
+            break
+          }
+        } catch (err) {
+          console.debug('[reader] tryWrapTextInDocument failed', err)
+        }
+      }
+    }
+
+    // As a last resort, render directly from the CFI when no existing element matches
+    if (!found.length) {
+      const created = tryRenderHighlightFromCfi(doc, ann)
+      if (created) push(created)
+    }
+  } catch (err) {
+    console.debug('[reader] findAnnotationElementsInDocument failed', err)
+  }
+
+  return found
+}
+
+/** Parse a subset of EPUB CFI to extract an element id (if present) and character offsets.
+ * Example: epubcfi(/6/8!/4/4[id440]/6,/1:95,/1:116) -> id: id440, start:95, end:116
+ */
+function parseLooseEpubCfi(cfi: string): { id?: string | null; start?: number | null; end?: number | null } {
+  const out: { id?: string | null; start?: number | null; end?: number | null } = {}
+  try {
+    let body = normalizeCfi(cfi)
+    // Split package/content paths
+    const bangIdx = body.indexOf('!')
+    const content = bangIdx >= 0 ? body.slice(bangIdx + 1) : body
+    // Extract id from any [id] step before the first comma
+    const firstComma = content.indexOf(',')
+    const pre = firstComma >= 0 ? content.slice(0, firstComma) : content
+    const idMatch = pre.match(/\[([^\]]+)\]/)
+    if (idMatch) out.id = idMatch[1]
+    // Extract start/end offsets like \/1:95, \/1:116
+    const parts = content.split(',').map(s => s.trim()).filter(Boolean)
+    if (parts.length >= 2) {
+      const startMatch = parts[1].match(/:(\d+)/)
+      if (startMatch) out.start = parseInt(startMatch[1], 10)
+    }
+    if (parts.length >= 3) {
+      const endMatch = parts[2].match(/:(\d+)/)
+      if (endMatch) out.end = parseInt(endMatch[1], 10)
+    }
+  } catch {}
+  return out
+}
+
+/** Parse a more detailed subset of EPUB CFI to navigate within the id scope.
+ * Returns element steps after the id (even numbers: 2->first, 4->second, ...),
+ * and text position hints for start/end (e.g., /1:offset -> textIndex=1, charOffset=offset).
+ */
+function parseDetailedCfi(cfi: string): {
+  baseId?: string | null
+  elementSteps: number[]
+  start?: { textIndex: number; charOffset: number } | null
+  end?: { textIndex: number; charOffset: number } | null
+} {
+  const out: {
+    baseId?: string | null
+    elementSteps: number[]
+    start?: { textIndex: number; charOffset: number } | null
+    end?: { textIndex: number; charOffset: number } | null
+  } = { elementSteps: [] }
+  try {
+    let body = normalizeCfi(cfi)
+    const bangIdx = body.indexOf('!')
+    const content = bangIdx >= 0 ? body.slice(bangIdx + 1) : body
+    const [pathPart, startPart, endPart] = content.split(',')
+    const segments = (pathPart || '').split('/').filter(Boolean)
+    // find the segment containing [id]
+    let idIdx = segments.findIndex(seg => /\[[^\]]+\]/.test(seg))
+    if (idIdx >= 0) {
+      const m = segments[idIdx].match(/\[([^\]]+)\]/)
+      if (m) out.baseId = m[1]
+      // steps after id segment
+      const after = segments.slice(idIdx + 1)
+      out.elementSteps = after.map(s => parseInt(s, 10)).filter(n => Number.isFinite(n))
+    }
+    const parseTextHint = (part?: string) => {
+      if (!part) return null
+      const m = part.match(/\/(\d+):(\d+)/)
+      if (!m) return null
+      return { textIndex: Math.max(1, parseInt(m[1], 10)), charOffset: Math.max(0, parseInt(m[2], 10)) }
+    }
+    out.start = parseTextHint(startPart)
+    out.end = parseTextHint(endPart)
+  } catch {}
+  return out
+}
+
+/** Attempt to render a highlight span directly from the backend CFI inside the given document.
+ * Returns the created span when successful, otherwise null.
+ */
+function tryRenderHighlightFromCfi(doc: Document, ann: { cfi: string; color?: string; note?: string }): HTMLElement | null {
+  try {
+    if (!doc || !ann || !ann.cfi) return null
+    // Parse base id first; if this section doesn't contain the target element, skip
+    const detailedPre = parseDetailedCfi(ann.cfi)
+    const preBaseId = detailedPre.baseId || parseLooseEpubCfi(ann.cfi).id
+    if (!preBaseId) return null
+    const preContainer = doc.getElementById(preBaseId)
+    if (!preContainer) return null
+    // 1) Best-effort: ask epub.js for the DOM Range for this CFI
+    try {
+      const range: Range | null | undefined = (renditionInstance as any)?.getRange?.(ann.cfi) || (bookInstance as any)?.getRange?.(ann.cfi)
+      if (range && range.startContainer) {
+        const rdoc = (range.startContainer as any).ownerDocument as Document | null
+        if (rdoc === doc) {
+          const span = doc.createElement('span')
+          try {
+            // Prefer extract+insert to keep nested structure intact
+            span.appendChild(range.extractContents())
+            range.insertNode(span)
+          } catch {
+            try { range.surroundContents(span) } catch {}
+          }
+          if (span.parentNode) {
+            try { span.classList.add('user-highlight') } catch {}
+            span.setAttribute('data-user-highlight', '1')
+            span.setAttribute('data-annotation-cfi', normalizeCfi(ann.cfi))
+            if (ann.note) span.setAttribute('data-annotation-note', ann.note)
+            if (ann.color) {
+              span.setAttribute('data-annotation-color', ann.color)
+              ;(span as HTMLElement).style.background = ann.color
+              try { (span as HTMLElement).style.color = getContrastColor(ann.color) } catch {}
+            }
+            ;(span as HTMLElement).style.pointerEvents = 'auto'
+            return span
+          }
+        }
+      }
+    } catch (e) {
+      // ignore getRange failures; fall back to loose parser below
+    }
+
+    // 2) Fallback: loose parse of id + (start,end) offsets under that id's subtree
+    // Use a more targeted resolver: navigate to element step(s) after ID,
+    // then index text only within that container so offsets map correctly.
+    const detailed = detailedPre
+    const baseId = preBaseId
+    let container: Element | null = preContainer
+    // Navigate even-number element steps: 2->first element child, 4->second, etc.
+    if (detailed.elementSteps && detailed.elementSteps.length) {
+      for (const step of detailed.elementSteps) {
+        if (!container) break
+        if (!Number.isFinite(step) || step < 2) continue
+        const idx = Math.floor(step / 2) - 1
+  const elChildren = Array.from(container.children) as Element[]
+        container = elChildren[idx] || container
+      }
+    }
+    if (!container) return null
+    const index = buildTextIndex(container)
+    if (!index || !index.totalLength) return null
+    const textNodes = index.runs
+    const startHint = detailed.start || null
+    const endHint = detailed.end || startHint
+    if (!startHint || !endHint) return null
+    const startTextIdx0 = Math.max(0, (startHint.textIndex || 1) - 1)
+    const endTextIdx0 = Math.max(0, (endHint.textIndex || 1) - 1)
+    // Compute absolute positions relative to container's consecutive text runs
+    const absOffsetFor = (ti0: number, char: number) => {
+      let acc = 0
+      for (let i = 0; i < index.runs.length && i < ti0; i++) acc += index.runs[i].node.length
+      return acc + Math.max(0, char)
+    }
+    const startAbs = absOffsetFor(startTextIdx0, startHint.charOffset || 0)
+    const endAbs = absOffsetFor(endTextIdx0, endHint.charOffset || 0)
+    const start = Math.max(0, Math.min(index.totalLength - 1, startAbs))
+    const end = Math.max(start + 1, Math.min(index.totalLength, endAbs))
+    const span = wrapAbsoluteTextRange(doc, index, start, end)
+    if (!span) return null
+    try { span.classList.add('user-highlight') } catch {}
+    span.setAttribute('data-user-highlight', '1')
+    span.setAttribute('data-annotation-cfi', normalizeCfi(ann.cfi))
+    if (ann.note) span.setAttribute('data-annotation-note', ann.note)
+    if (ann.color) {
+      span.setAttribute('data-annotation-color', ann.color)
+      ;(span as HTMLElement).style.background = ann.color
+      try { (span as HTMLElement).style.color = getContrastColor(ann.color) } catch {}
+    }
+    ;(span as HTMLElement).style.pointerEvents = 'auto'
+    return span
+  } catch (err) {
+    console.debug('[reader] tryRenderHighlightFromCfi failed', err)
+    return null
+  }
+}
+
+function buildTextIndex(root: Element): { runs: Array<{ node: Text; start: number; end: number }>; totalLength: number } {
+  const runs: Array<{ node: Text; start: number; end: number }> = []
+  let total = 0
+  try {
+    const walker = root.ownerDocument!.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node: Node) {
+        const parent = node.parentElement
+        if (!parent) return NodeFilter.FILTER_REJECT
+        const tag = parent.tagName?.toLowerCase()
+        if (tag === 'script' || tag === 'style' || tag === 'noscript') return NodeFilter.FILTER_REJECT
+        const val = node.nodeValue || ''
+        if (!val.trim()) return NodeFilter.FILTER_REJECT
+        // Skip text already inside an existing highlight to avoid nesting
+        if (parent.closest && parent.closest('[data-user-highlight], .user-highlight')) return NodeFilter.FILTER_REJECT
+        return NodeFilter.FILTER_ACCEPT
+      }
+    } as any)
+    let tn: Text | null = walker.nextNode() as Text | null
+    while (tn) {
+      const len = (tn.nodeValue || '').length
+      if (len > 0) {
+        runs.push({ node: tn, start: total, end: total + len })
+        total += len
+      }
+      tn = walker.nextNode() as Text | null
+    }
+  } catch {}
+  return { runs, totalLength: total }
+}
+
+function wrapAbsoluteTextRange(doc: Document, index: { runs: Array<{ node: Text; start: number; end: number }>; totalLength: number }, absStart: number, absEnd: number): HTMLElement | null {
+  try {
+    if (absEnd <= absStart) return null
+    // Find first run containing absStart and last run containing absEnd-1
+    const runs = index.runs
+    if (!runs.length) return null
+    let startRunIdx = runs.findIndex(r => absStart >= r.start && absStart < r.end)
+    let endRunIdx = runs.findIndex(r => (absEnd - 1) >= r.start && (absEnd - 1) < r.end)
+    if (startRunIdx === -1) startRunIdx = 0
+    if (endRunIdx === -1) endRunIdx = runs.length - 1
+    // Create a Range covering the target span across runs
+    const range = doc.createRange()
+    const startRun = runs[startRunIdx]
+    const endRun = runs[endRunIdx]
+    const startOffsetInNode = absStart - startRun.start
+    const endOffsetInNode = (absEnd - endRun.start)
+    range.setStart(startRun.node, Math.max(0, Math.min(startRun.node.length, startOffsetInNode)))
+    range.setEnd(endRun.node, Math.max(0, Math.min(endRun.node.length, endOffsetInNode)))
+    // Wrap the range in a span, using surroundContents when possible
+    const span = doc.createElement('span')
+    try {
+      span.appendChild(range.extractContents())
+      range.insertNode(span)
+    } catch {
+      try {
+        range.surroundContents(span)
+      } catch (e) {
+        return null
+      }
+    }
+    return span
+  } catch (err) {
+    console.debug('[reader] wrapAbsoluteTextRange failed', err)
+    return null
+  }
+}
+
+function cfiMatches(value: string, variants: string[]): boolean {
+  if (!value || !variants.length) return false
+  const trimmed = value.trim()
+  const normalized = normalizeCfi(trimmed)
+  for (const variant of variants) {
+    const variantTrimmed = variant.trim()
+    if (variantTrimmed && (variantTrimmed === trimmed || `epubcfi(${variantTrimmed})` === trimmed || variantTrimmed === normalized)) return true
+    const normalizedVariant = normalizeCfi(variantTrimmed)
+    if (normalized && normalizedVariant && normalized === normalizedVariant) return true
+    if (normalizedVariant && normalizedVariant.endsWith(':0') && normalized === normalizedVariant.slice(0, -2)) return true
+  }
+  return false
+}
+
+function generateCfiVariants(cfi: string): string[] {
+  const variants = new Set<string>()
+  const add = (value: string | null | undefined) => {
+    if (!value) return
+    variants.add(value)
+    const normalized = normalizeCfi(value)
+    if (normalized) variants.add(normalized)
+    if (normalized.endsWith(':0')) variants.add(normalized.slice(0, -2))
+  }
+  add(cfi)
+  return Array.from(variants)
+}
+
+function normalizeCfi(value: string): string {
+  let result = (value || '').trim()
+  if (!result) return ''
+  if (result.startsWith('epubcfi(') && result.endsWith(')')) {
+    result = result.slice(8, -1)
+  }
+  if (result.endsWith('!')) {
+    result = result.slice(0, -1)
+  }
+  return result
+}
+
+function normalizeAnnotationText(value: string): string {
+  return (value || '').replace(/\s+/g, ' ').trim()
+}
+
+function textsRoughlyEqual(a: string, b: string): boolean {
+  const na = normalizeAnnotationText(a).toLowerCase()
+  const nb = normalizeAnnotationText(b).toLowerCase()
+  if (!na || !nb) return false
+  if (na === nb) return true
+  return na.includes(nb) || nb.includes(na)
+}
+
+function collapseWhitespaceWithMap(value: string): { text: string; map: number[] } {
+  const map: number[] = []
+  let result = ''
+  let lastSpace = false
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]
+    if (/\s/.test(ch)) {
+      if (!lastSpace) {
+        result += ' '
+        map.push(i)
+        lastSpace = true
+      }
+    } else {
+      result += ch
+      map.push(i)
+      lastSpace = false
+    }
+  }
+  let start = 0
+  while (start < result.length && result[start] === ' ') start++
+  let end = result.length
+  while (end > start && result[end - 1] === ' ') end--
+  return { text: result.slice(start, end), map: map.slice(start, end) }
+}
+
+function findLooseTextMatch(source: string, target: string): { start: number; length: number } | null {
+  const normalizedTarget = normalizeAnnotationText(target)
+  if (!normalizedTarget) return null
+  const collapsed = collapseWhitespaceWithMap(source)
+  if (!collapsed.text) return null
+  const haystack = collapsed.text.toLowerCase()
+  const needle = normalizedTarget.toLowerCase()
+  const idx = haystack.indexOf(needle)
+  if (idx === -1) return null
+  const start = collapsed.map[idx]
+  const endIdx = idx + needle.length - 1
+  const endMapIndex = Math.min(collapsed.map.length - 1, endIdx)
+  let end = collapsed.map[endMapIndex] + 1
+  while (end < source.length && /\s/.test(source[end])) end++
+  const length = Math.max(1, end - start)
+  return { start, length }
+}
+
+/** Try to locate the exact text inside the document and wrap the first match in a span.user-highlight.
+ * Returns the created span when a wrap succeeds; null otherwise. This is a heuristic fallback when epub.js didn't create highlight nodes.
+ */
+function tryWrapTextInDocument(doc: Document, text: string): HTMLElement | null {
+  try {
+    if (!doc || !text || !doc.body) return null
+    const normalizedSearch = normalizeAnnotationText(text)
+    if (!normalizedSearch) return null
+
+    // Walk text nodes under body looking for the first occurrence.
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node: Node) {
+        const parent = node.parentElement
+        if (!parent) return NodeFilter.FILTER_REJECT
+        const tag = parent.tagName?.toLowerCase()
+        if (tag === 'script' || tag === 'style' || tag === 'noscript') return NodeFilter.FILTER_REJECT
+        if (parent.closest && parent.closest('.user-highlight')) return NodeFilter.FILTER_REJECT
+        if (!node.nodeValue) return NodeFilter.FILTER_REJECT
+        if ((node.nodeValue || '').trim().length === 0) return NodeFilter.FILTER_REJECT
+        return NodeFilter.FILTER_ACCEPT
+      }
+    } as any)
+
+    let tn: Text | null = walker.nextNode() as Text | null
+    while (tn) {
+      try {
+        const nv = tn.nodeValue || ''
+        const match = findLooseTextMatch(nv, normalizedSearch)
+        if (match) {
+          const span = wrapTextNodeRangeWithSpan(doc, tn, match.start, match.length)
+          if (span) return span
+        }
+      } catch {}
+      tn = walker.nextNode() as Text | null
+    }
+  } catch (err) {
+    console.debug('[reader] tryWrapTextInDocument error', err)
+  }
+  return null
+}
+
+function wrapTextNodeRangeWithSpan(doc: Document, textNode: Text, start: number, length: number): HTMLElement | null {
+  try {
+    const val = textNode.nodeValue || ''
+    const before = val.slice(0, start)
+    const match = val.slice(start, start + length)
+    const after = val.slice(start + length)
+    const parent = textNode.parentNode
+    if (!parent) return null
+    const beforeNode = before ? doc.createTextNode(before) : null
+    const span = doc.createElement('span')
+    span.className = 'user-highlight'
+    span.setAttribute('data-user-highlight', '1')
+    // leave data-annotation-cfi to be set by caller
+    span.textContent = match
+    const afterNode = after ? doc.createTextNode(after) : null
+    if (beforeNode) parent.insertBefore(beforeNode, textNode)
+    parent.insertBefore(span, textNode)
+    if (afterNode) parent.insertBefore(afterNode, textNode)
+    parent.removeChild(textNode)
+    return span
+  } catch (err) {
+    console.debug('[reader] wrapTextNodeRangeWithSpan failed', err)
+    return null
   }
 }
 
@@ -801,6 +1609,20 @@ onMounted(async () => {
     title.value = doc.name
 
     await renderEpubFromBase64(doc.epubContent)
+    // FRONT-END SYNC: temporarily register the document with the Annotation
+    // concept so the backend accepts annotation creates for this document.
+    // This should be removed once server-side sync is in place.
+    try {
+      if (userId.value && documentId) {
+        // await registration so that subsequent load of persisted annotations
+        // sees a registered document when the backend requires it.
+        await registerDocumentWithAnnotationConcept(userId.value, documentId).catch((err) => console.debug('[reader] registerDocumentWithAnnotationConcept failed on open', err))
+        // Now fetch persisted annotations and render them into the rendition
+        try { await loadPersistedAnnotations() } catch (err) { console.debug('[reader] loadPersistedAnnotations error', err) }
+      }
+    } catch (err) {
+      console.debug('[reader] registerDocumentWithAnnotationConcept call error on open', err)
+    }
   } catch (e: any) {
     error.value = e?.message ?? 'Failed to open document'
   } finally {
@@ -811,6 +1633,10 @@ onMounted(async () => {
 onBeforeUnmount(async () => {
   if (cleanup) cleanup()
   window.removeEventListener('keydown', onKeyDown)
+  try {
+    annotationAttachTimers.forEach((timer) => { try { clearTimeout(timer) } catch {} })
+    annotationAttachTimers.clear()
+  } catch {}
   if (userId.value && documentId) {
     try { await closeDocument(userId.value, documentId) } catch {}
   }
@@ -894,7 +1720,7 @@ async function renderEpubFromBase64(b64: string) {
         }
 
         if (selRange && doc) {
-          const existing = Array.from(doc.querySelectorAll('.user-highlight'))
+          const existing = Array.from(doc.querySelectorAll('.user-highlight, [data-user-highlight], .epubjs-hl'))
           for (const el of existing) {
             try {
               // If selection overlaps any existing highlight, abort
@@ -981,12 +1807,18 @@ async function renderEpubFromBase64(b64: string) {
     // Attach iframe listeners when a section is rendered so clicks on
     // highlights can be detected.
     setTimeout(() => attachIframeDocListeners(), 50)
+    // Ensure chapter-specific annotations get created when their section loads
+    setTimeout(() => ensureCurrentSectionAnnotations(), 70)
     setTimeout(() => syncHighlightAttributes(), 80)
   })
 
   rendition.on('relocated', (location: any) => {
     if (!location || currentToken !== retryToken) return
     updateNavigationState(location)
+    // After navigating to a new section, re-attach listeners and resync attributes
+    setTimeout(() => attachIframeDocListeners(), 30)
+    setTimeout(() => ensureCurrentSectionAnnotations(), 40)
+    setTimeout(() => syncHighlightAttributes(), 50)
   })
 
   // Time out if it takes too long; race the display promise so we don't hang
@@ -1466,9 +2298,39 @@ function confirmHighlight(color?: string, note?: string) {
   }
 
   // Record the annotation once (including chosen color and optional note)
-  const ann: { cfi: string; text: string; color?: string; note?: string } = { cfi, text, color: chosenColor }
+  const ann: { id?: string; cfi: string; text: string; color?: string; note?: string } = { cfi, text, color: chosenColor }
   if (note) ann.note = note
+  // Optimistically add to local list so UI updates immediately
   annotationsList.value.push(ann)
+
+  // Persist to backend (best-effort). Attach returned annotation id when available.
+    try {
+      if (userId.value && documentId) {
+        const payload = {
+          creator: userId.value,
+          document: documentId,
+          color: chosenColor,
+          content: note ?? '',
+          location: cfi,
+          tags: [] as string[],
+        }
+        console.debug('[reader] createAnnotation payload', payload)
+        createAnnotation(payload).then((resp: any) => {
+          if (resp && (resp as any).annotation) {
+            const createdId = (resp as any).annotation as string
+            // update the in-memory record with id so future edits/deletes can reference it
+            const match = annotationsList.value.find((a) => a.cfi === cfi && (a.text || '').trim() === (text || '').trim())
+            if (match) match.id = createdId
+          }
+        }).catch((err) => {
+          console.debug('[reader] createAnnotation failed', err)
+        })
+      } else {
+        console.warn('[reader] skipping createAnnotation: missing userId or documentId', { userId: userId.value, documentId })
+      }
+    } catch (err) {
+      console.debug('[reader] createAnnotation call error', err)
+    }
 
   // Ensure any highlights present in iframe docs keep consistent metadata.
   syncHighlightAttributes()
@@ -1504,19 +2366,40 @@ function confirmRemove() {
     if (!hasMarker) { clearRemoveConfirm(); return }
   } catch { clearRemoveConfirm(); return }
 
+  // Resolve backend annotation id(s) up front when possible so we can
+  // reliably delete even if text matching fails after DOM changes.
+  const idsToDeleteSet = new Set<string>()
+  try {
+    const idAttr = el.getAttribute?.('data-annotation-id')
+    if (idAttr) idsToDeleteSet.add(idAttr)
+    // Also map from our in-memory list by CFI/text/id when available
+    if (annotationsList.value.length) {
+      for (const a of annotationsList.value) {
+        try {
+          if (a.id && idAttr && a.id === idAttr) idsToDeleteSet.add(a.id)
+          if (cfiToRemove && a.cfi && normalizeCfi(a.cfi) === normalizeCfi(cfiToRemove) && a.id) idsToDeleteSet.add(a.id)
+        } catch {}
+      }
+    }
+  } catch {}
+
   // First, try to remove the annotation using the epub.js API if we have a CFI.
   // This is the most important step for clearing the library's internal state.
   if (cfiToRemove && renditionInstance) {
     try {
       const ann = (renditionInstance as any).annotations
       if (ann) {
-        console.debug('[reader] removing annotation via API with cfi', cfiToRemove)
-        try { ann.remove(cfiToRemove, 'highlight') } catch (e1) {
-          try { ann.remove(cfiToRemove) } catch (e2) {
-            try { ann.removeAnnotation(cfiToRemove) } catch (e3) {
-              console.debug('[reader] all annotation remove attempts failed', { e1, e2, e3 })
-            }
-          }
+        const variants = generateCfiVariants(cfiToRemove)
+        console.debug('[reader] removing annotation via API with cfi', cfiToRemove, 'variants=', variants)
+        let removedViaApi = false
+        for (const v of variants) {
+          try { ann.remove(v, 'highlight'); removedViaApi = true } catch {}
+          if (!removedViaApi) { try { ann.remove(v); removedViaApi = true } catch {} }
+          if (!removedViaApi) { try { ann.removeAnnotation(v); removedViaApi = true } catch {} }
+          if (removedViaApi) break
+        }
+        if (!removedViaApi) {
+          console.debug('[reader] annotation remove via API did not confirm; proceeding with DOM cleanup only')
         }
       }
     } catch (e) {
@@ -1524,51 +2407,76 @@ function confirmRemove() {
     }
   }
 
-  // Second, unwrap the highlight element so text remains but styling is gone.
+  // Second, remove all DOM instances of this annotation across visible iframes.
   try {
-    const parent = el.parentNode
-    if (parent) {
-      while (el.firstChild) parent.insertBefore(el.firstChild, el)
-      parent.removeChild(el)
-      // Normalize the parent to merge adjacent text nodes left by the unwrap
-      try { parent.normalize() } catch {}
-      const doc = (parent as any)?.ownerDocument || (el as any)?.ownerDocument
-      if (doc) syncHighlightAttributes(doc)
-    }
+    const idAttr = el.getAttribute?.('data-annotation-id') || undefined
+    removeAnnotationElementsInDocs({ id: idAttr || undefined, cfi: cfiToRemove || undefined })
   } catch {}
 
-  // Third, remove matching entries from our local annotationsList.
+  // Third, remove matching entries from our local annotationsList and ensure id(s) are collected.
   try {
     const text = (el.textContent || '').trim()
+    const idsToDelete: string[] = []
+    // seed from earlier resolved ids
+    try { idsToDelete.push(...Array.from(idsToDeleteSet)) } catch {}
     if (text) {
+      // collect ids that match this text or cfi
+      for (const a of annotationsList.value) {
+        const at = (a.text || '').trim()
+        if (!at) continue
+        if (cfiToRemove && a.cfi === cfiToRemove) {
+          if (a.id) idsToDelete.push(a.id)
+          continue
+        }
+        if (at === text || at.includes(text) || text.includes(at)) {
+          if (a.id) idsToDelete.push(a.id)
+        }
+      }
       annotationsList.value = annotationsList.value.filter((a) => {
         const at = (a.text || '').trim()
         if (!at) return true
-        // Also check CFI in case of identical text highlights
         if (cfiToRemove && a.cfi === cfiToRemove) return false
         return !(at === text || at.includes(text) || text.includes(at))
       })
     } else if (cfiToRemove) {
       // Fallback to removing by CFI if text is empty
+      for (const a of annotationsList.value) if (a.cfi === cfiToRemove && a.id) idsToDelete.push(a.id)
       annotationsList.value = annotationsList.value.filter(a => a.cfi !== cfiToRemove)
     }
+
+    // Tell backend to delete matching annotations (best-effort)
+    try {
+      if (userId.value) {
+        const uniqueIds = Array.from(new Set(idsToDelete.filter(Boolean)))
+        if (uniqueIds.length) {
+          for (const id of uniqueIds) {
+            deleteAnnotation(userId.value, id).catch((err) => console.debug('[reader] deleteAnnotation failed', err))
+          }
+        } else if (cfiToRemove) {
+          // As a last resort, query backend and try to resolve id by CFI
+          try {
+            searchAnnotations(userId.value, documentId, '').then((res: any) => {
+              try {
+                const anns = Array.isArray(res) ? (res[0]?.annotations ?? []) : (res?.annotations ?? [])
+                const target = (anns || []).find((a: any) => normalizeCfi(a?.location || a?.cfi || '') === normalizeCfi(cfiToRemove))
+                const id = target?._id || target?.id || target?.annotation?.id
+                if (id) deleteAnnotation(userId.value!, id).catch((err) => console.debug('[reader] deleteAnnotation failed (resolved via search)', err))
+              } catch {}
+            }).catch(() => {})
+          } catch {}
+        }
+      }
+    } catch (err) { console.debug('[reader] deleteAnnotation call error', err) }
   } catch {}
 
   // Clear any selection inside the iframe so future selections are fresh
   try { pendingSelectionWindow?.getSelection?.()?.removeAllRanges() } catch {}
 
   clearRemoveConfirm()
-
-  // Finally, ask the rendition to re-display the current view to ensure
-  // the DOM is clean and internal caches are updated.
-  try {
-    const cfi = currentCfi
-    if (renditionInstance && cfi) {
-      setTimeout(() => {
-        try { (renditionInstance as any).display(cfi) } catch (e) { /* ignore */ }
-      }, 50)
-    }
-  } catch {}
+  // Avoid forcing a re-display here; re-rendering immediately can cause
+  // epub.js to recreate the highlight if its internal cache wasn't updated yet.
+  // We rely on API removal + DOM cleanup above.
+  try { syncHighlightAttributes() } catch {}
 }
 
 function startEditAnnotation() {
@@ -1645,8 +2553,66 @@ function confirmEditAnnotation() {
       }
     } catch {}
 
+    // Immediately propagate edits to all iframe docs (not just the clicked element)
+    try {
+      const t: { id?: string | null; cfi?: string | null } = { cfi: cfiToEdit }
+      // If we already know the id for this CFI in-memory, include it for stronger matching
+      const known = annotationsList.value.find(a => (cfiToEdit && a.cfi === cfiToEdit))
+      if (known?.id) t.id = known.id
+      updateAnnotationElementsInDocs(t, { color: color ?? null, note: note ?? null })
+    } catch {}
+
     // Re-sync attributes across iframes
     try { syncHighlightAttributes() } catch {}
+
+    // Persist edit to backend: prefer update if we have an id, otherwise create.
+    try {
+      if (userId.value) {
+        // find annotation by CFI first, then by text
+        let target: { id?: string; cfi: string; text: string } | undefined
+        if (cfiToEdit) target = annotationsList.value.find(a => a.cfi === cfiToEdit)
+        if (!target && el) {
+          const txt = (el.textContent || '').trim()
+          if (txt) target = annotationsList.value.find(a => (a.text || '').trim() === txt)
+        }
+        if (target && target.id) {
+          // update existing annotation
+          updateAnnotation({ user: userId.value, annotation: target.id, newColor: color, newContent: note ?? '' }).catch((err) => {
+            console.debug('[reader] updateAnnotation failed', err)
+          })
+          // We know the id; make sure all DOM instances carry it and reflect updates
+          try { updateAnnotationElementsInDocs({ id: target.id, cfi: target.cfi }, { color: color ?? null, note: note ?? null }) } catch {}
+        } else {
+          // no persisted id: create a new annotation record for this highlight
+          const loc = cfiToEdit || (target ? target.cfi : undefined)
+          if (loc) {
+            if (userId.value && documentId) {
+              const payload = {
+                creator: userId.value,
+                document: documentId,
+                color: color,
+                content: note ?? '',
+                location: loc,
+                tags: [] as string[],
+              }
+              console.debug('[reader] createAnnotation (edit) payload', payload)
+              createAnnotation(payload).then((resp: any) => {
+                if (resp && (resp as any).annotation) {
+                  const createdId = (resp as any).annotation as string
+                  // attach id to the matching in-memory record
+                  const match = annotationsList.value.find(a => a.cfi === loc || (a.text || '').trim() === (el.textContent || '').trim())
+                  if (match) match.id = createdId
+                  // Also mark DOM nodes with the new id so future edits/deletes sync instantly
+                  try { updateAnnotationElementsInDocs({ id: createdId, cfi: loc }, { color: color ?? null, note: note ?? null }) } catch {}
+                }
+              }).catch((err) => console.debug('[reader] createAnnotation failed (edit)', err))
+            } else {
+              console.warn('[reader] skipping createAnnotation (edit): missing userId or documentId', { userId: userId.value, documentId })
+            }
+          }
+        }
+      }
+    } catch (err) { console.debug('[reader] persist edit error', err) }
   } catch (err) {
     // ignore edit errors
   } finally {
