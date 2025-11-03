@@ -30,6 +30,13 @@
       </div>
 
       <div class="toolbar-section">
+        <span style="color:var(--muted);">Line height</span>
+        <button @click="decreaseLineHeight">−</button>
+        <span aria-live="polite" style="min-width:3ch; text-align:center;">{{ lineHeightRatio.toFixed(1) }}×</span>
+        <button @click="increaseLineHeight">+</button>
+      </div>
+
+      <div class="toolbar-section">
         <span style="color:var(--muted);">Font</span>
         <select class="toc-select" v-model="fontFamily" @change="onFontChange">
           <option v-for="opt in fontOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
@@ -94,7 +101,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, registerDocumentWithAnnotationConcept, searchAnnotations } from '@/lib/api/endpoints'
+import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, registerDocumentWithAnnotationConcept, searchAnnotations, getDocumentCurrentSettings, editSettings } from '@/lib/api/endpoints'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import ePub from 'epubjs'
@@ -130,11 +137,14 @@ const currentChapter = ref('')
 const selectedToc = ref('')
 const tocOptions = ref<Array<{ label: string; href: string }>>([])
 const fontScale = ref(100)
+const fontPx = ref<number | null>(null)
+const lineHeightPx = ref<number | null>(null)
+const lineHeightRatio = ref<number>(1.5)
+const currentTextSettingsId = ref<string | null>(null)
 // Default to Times New Roman for a book-like appearance
 const fontFamily = ref<string>('"Times New Roman", Times, serif')
 const fontOptions = [
   { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
-  { label: 'Special Elite', value: '"Special Elite", monospace' },
   { label: 'Georgia', value: 'Georgia, serif' },
   { label: 'Garamond', value: 'Garamond, serif' },
   { label: 'Segoe UI', value: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' },
@@ -143,23 +153,6 @@ const fontOptions = [
   { label: 'Monospace', value: 'monospace' }
 ]
 
-// Google Fonts URL for Special Elite. We inject this into host and iframe docs when needed.
-const specialEliteHref = 'https://fonts.googleapis.com/css2?family=Special+Elite&display=swap'
-
-function ensureSpecialEliteLoadedInDocument(doc?: Document | null) {
-  try {
-    if (!doc) return
-    const links = Array.from(doc.getElementsByTagName('link'))
-    for (const l of links) {
-      try { if (l.getAttribute('href') === specialEliteHref) return } catch {}
-    }
-    const link = doc.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = specialEliteHref
-    const target = doc.head || doc.getElementsByTagName('head')?.[0] || doc.documentElement
-    try { target.appendChild(link) } catch { try { doc.documentElement.appendChild(link) } catch {} }
-  } catch {}
-}
 const pagesPerSpread = ref(2)
 const locationsPerSpread = ref(1)
 
@@ -836,19 +829,6 @@ function parseDetailedCfi(cfi: string): {
     start?: { textIndex: number; charOffset: number } | null
     end?: { textIndex: number; charOffset: number } | null
   } = { elementSteps: [] }
-    // If user selected Special Elite, make sure the font stylesheet is available
-    try {
-      if ((fontFamily.value || '').includes('Special Elite')) {
-        try { ensureSpecialEliteLoadedInDocument(document) } catch {}
-        // also inject into each iframe doc we control
-        try {
-          const iframes = readerEl.value?.querySelectorAll('iframe') || []
-          for (const f of Array.from(iframes) as HTMLIFrameElement[]) {
-            try { ensureSpecialEliteLoadedInDocument(f.contentDocument) } catch {}
-          }
-        } catch {}
-      }
-    } catch {}
   try {
     let body = normalizeCfi(cfi)
     const bangIdx = body.indexOf('!')
@@ -1558,8 +1538,6 @@ function attachIframeDocListeners() {
               }
             } catch (e) { console.debug('[reader] failed to attach window listeners', e) }
             setTimeout(() => syncHighlightAttributes(doc), 20)
-            // Ensure Special Elite font (web) is loaded into iframe docs when present
-            // try { setTimeout(() => ensureSpecialEliteLoadedInDocument(doc), 30) } catch {}
           }
         }
         const doc = frame.contentDocument
@@ -1645,6 +1623,23 @@ onMounted(async () => {
     title.value = doc.name
 
     await renderEpubFromBase64(doc.epubContent)
+    // Load and apply document text settings
+    try {
+      const sres = await getDocumentCurrentSettings(documentId)
+      if (Array.isArray(sres) && sres[0]?.settings) {
+        const s = sres[0].settings
+        currentTextSettingsId.value = s._id
+        if (s.font) fontFamily.value = s.font
+        fontPx.value = Number.isFinite(s.fontSize as any) ? s.fontSize : 16
+        if (Number.isFinite(s.lineHeight as any) && Number.isFinite(s.fontSize as any) && s.fontSize) {
+          lineHeightRatio.value = Math.max(1.0, Math.min(3.0, (s.lineHeight as number) / (s.fontSize as number)))
+        } else {
+          lineHeightRatio.value = 1.5
+        }
+        lineHeightPx.value = Math.max(10, Math.round((fontPx.value || 16) * lineHeightRatio.value))
+        try { applyTheme(); applyFont() } catch {}
+        }
+    } catch {}
     // FRONT-END SYNC: temporarily register the document with the Annotation
     // concept so the backend accepts annotation creates for this document.
     // This should be removed once server-side sync is in place.
@@ -2669,29 +2664,47 @@ function onTocChange() {
 
 /** Incrementally enlarge the rendition font size. */
 function increaseFont() {
-  if (fontScale.value >= 160) return
-  fontScale.value += 10
+  const anchorCfi = getCurrentStartCfi()
+  if (fontPx.value == null) fontPx.value = 16
+  fontPx.value = Math.min(48, fontPx.value + 2)
+  // Always keep line-height synced to 1.5x the current font size
+  lineHeightPx.value = Math.max(10, Math.round((fontPx.value || 16) * (lineHeightRatio.value || 1.5)))
   applyFont()
+  persistTextSettings()
+  restoreCfiAfterResize(anchorCfi)
 }
 
 /** Incrementally reduce the rendition font size. */
 function decreaseFont() {
-  if (fontScale.value <= 70) return
-  fontScale.value -= 10
+  const anchorCfi = getCurrentStartCfi()
+  if (fontPx.value == null) fontPx.value = 16
+  fontPx.value = Math.max(10, fontPx.value - 2)
+  // Always keep line-height synced to 1.5x the current font size
+  lineHeightPx.value = Math.max(10, Math.round((fontPx.value || 16) * (lineHeightRatio.value || 1.5)))
   applyFont()
+  persistTextSettings()
+  restoreCfiAfterResize(anchorCfi)
 }
 
 /** Apply the current font size value to the rendition theme. */
 function applyFont() {
   if (!renditionInstance) return
-  renditionInstance.themes.fontSize(`${fontScale.value}%`)
+  if (fontPx.value != null) {
+    renditionInstance.themes.fontSize(`${fontPx.value}px`)
+  } else {
+    renditionInstance.themes.fontSize(`${fontScale.value}%`)
+  }
   // Re-apply theme after font changes to ensure colors persist
   applyTheme()
 }
 
 function onFontChange() {
   // Apply the selected font family to the rendition using the theme
+  const anchorCfi = getCurrentStartCfi()
+  lineHeightPx.value = Math.max(10, Math.round((fontPx.value || 16) * (lineHeightRatio.value || 1.5)))
   applyTheme()
+  restoreCfiAfterResize(anchorCfi)
+  persistTextSettings()
 }
 
 /** Apply a simple, high-contrast theme to the book content (black on white). */
@@ -2700,7 +2713,7 @@ function applyTheme() {
   try {
     // Register a small theme that forces page body color and background
     // epub.js theme API supports registering named themes and selecting them.
-    const theme = {
+    const theme: any = {
       body: {
         color: '#000000',
         background: '#ffffff',
@@ -2715,6 +2728,9 @@ function applyTheme() {
         color: '#000'
       }
     }
+    const sizePx = fontPx.value ?? 16
+    const lhPx = (lineHeightRatio.value ? sizePx * lineHeightRatio.value : (lineHeightPx.value ?? Math.round(sizePx * 1.5)))
+    if (lhPx != null) theme.body['line-height'] = `${lhPx}px`
     try { renditionInstance.themes.register('reader-high-contrast', theme) } catch { /* ignore if already registered */ }
     try { renditionInstance.themes.select('reader-high-contrast') } catch { /* fallback if select fails */ }
     // Ensure live font changes take effect even if the theme was already registered
@@ -2724,6 +2740,53 @@ function applyTheme() {
   } catch {
     // ignore theme application errors
   }
+}
+
+function persistTextSettings() {
+  try {
+    if (!currentTextSettingsId.value) return
+    const size = fontPx.value != null ? fontPx.value : 16
+    const ratio = lineHeightRatio.value || 1.5
+    const lh = Math.max(10, Math.round(size * ratio))
+    editSettings(currentTextSettingsId.value, fontFamily.value, size, lh).catch(() => {})
+  } catch {}
+}
+
+function increaseLineHeight() {
+  const anchorCfi = getCurrentStartCfi()
+  // Step line-height ratio by 0.1 within sensible bounds
+  lineHeightRatio.value = Math.min(3.0, parseFloat((lineHeightRatio.value + 0.1).toFixed(1)))
+  const size = fontPx.value || 16
+  lineHeightPx.value = Math.max(10, Math.round(size * lineHeightRatio.value))
+  applyTheme()
+  persistTextSettings()
+  restoreCfiAfterResize(anchorCfi)
+}
+
+function decreaseLineHeight() {
+  const anchorCfi = getCurrentStartCfi()
+  lineHeightRatio.value = Math.max(1.0, parseFloat((lineHeightRatio.value - 0.1).toFixed(1)))
+  const size = fontPx.value || 16
+  lineHeightPx.value = Math.max(10, Math.round(size * lineHeightRatio.value))
+  applyTheme()
+  persistTextSettings()
+  restoreCfiAfterResize(anchorCfi)
+}
+
+function getCurrentStartCfi(): string | null {
+  try {
+    const loc: any = (renditionInstance as any)?.currentLocation?.()
+    return loc?.start?.cfi || null
+  } catch {
+    return null
+  }
+}
+
+function restoreCfiAfterResize(anchorCfi: string | null) {
+  if (!anchorCfi || !renditionInstance) return
+  // Schedule a couple of attempts to restore after layout settles
+  try { setTimeout(() => { try { renditionInstance!.display(anchorCfi) } catch {} }, 0) } catch {}
+  try { setTimeout(() => { try { renditionInstance!.display(anchorCfi) } catch {} }, 120) } catch {}
 }
 
 /**

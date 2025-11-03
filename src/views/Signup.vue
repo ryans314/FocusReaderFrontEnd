@@ -18,7 +18,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
-import { createAccount, createLibrary, initUserFocusStats } from '@/lib/api/endpoints'
+import { createAccount, createLibrary, initUserFocusStats, createUserSettings } from '@/lib/api/endpoints'
 import { useAuthStore } from '@/stores/auth'
 
 const username = ref('')
@@ -69,6 +69,17 @@ async function onSubmit() {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('initUserFocusStats error:', e)
+    }
+
+    // Create default TextSettings for the new user (Times New Roman, 16px, 24px line height)
+    try {
+      const settingsRes = await createUserSettings('"Times New Roman", Times, serif', 16, 24, createdUserId)
+      if ('error' in settingsRes) {
+        // Non-fatal
+        console.warn('createUserSettings failed:', settingsRes.error)
+      }
+    } catch (e) {
+      console.warn('createUserSettings error:', e)
     }
     // Optionally auto-login the new account
     try {

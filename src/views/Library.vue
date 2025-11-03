@@ -60,7 +60,7 @@ import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
-import { createDocument, createLibrary, getDocumentsInLibrary, getLibraryByUser, removeDocument } from '@/lib/api/endpoints'
+import { createDocument, createLibrary, getDocumentsInLibrary, getLibraryByUser, removeDocument, getUserDefaultSettings, createDocumentSettings } from '@/lib/api/endpoints'
 import type { Document } from '@/lib/api/types'
 import type { AxiosError } from 'axios'
 
@@ -119,6 +119,22 @@ async function createDoc() {
     approximateBytes = Math.ceil((content.length * 3) / 4)
     const res = await createDocument(newDocName.value, content, libraryId.value)
     if ('error' in res) throw new Error(res.error)
+    const createdDocId = res.document
+
+    // Create document settings from the user's default settings (best-effort)
+    try {
+      const def = await getUserDefaultSettings(userId.value)
+      if (Array.isArray(def) && def[0]?.settings) {
+        const s = def[0].settings
+        const setRes = await createDocumentSettings(s.font, s.fontSize, s.lineHeight, createdDocId)
+        if ('error' in setRes) {
+          console.warn('createDocumentSettings failed:', setRes.error)
+        }
+      }
+    } catch (e) {
+      // Non-fatal; user can still open and the reader will handle missing settings
+      console.warn('Failed to create document settings:', e)
+    }
     newDocName.value = ''
     newDocContent.value = ''
     epubBase64.value = ''
