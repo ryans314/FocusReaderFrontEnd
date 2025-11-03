@@ -8,6 +8,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/reader/:documentId', name: 'reader-doc', component: () => import('@/views/DocumentReader.vue') },
   { path: '/annotations', name: 'annotations', component: () => import('@/views/Annotations.vue') },
   { path: '/stats', name: 'stats', component: () => import('@/views/Stats.vue') }
+  ,{ path: '/profile', name: 'profile', component: () => import('@/views/Profile.vue') }
 ]
 
 const router = createRouter({

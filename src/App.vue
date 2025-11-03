@@ -4,6 +4,7 @@
     <RouterLink to="/reader">Reader</RouterLink>
     <RouterLink to="/annotations">Annotations</RouterLink>
     <RouterLink to="/stats">Stats</RouterLink>
+  <RouterLink v-if="isAuthed" to="/profile">Profile</RouterLink>
     <span style="flex:1"></span>
   <RouterLink v-if="!isAuthed" to="/login">Login</RouterLink>
   <RouterLink v-if="!isAuthed" to="/signup">Sign Up</RouterLink>
