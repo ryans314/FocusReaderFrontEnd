@@ -1,18 +1,15 @@
 <template>
-  <div class="card">
-    <h2>Create Account</h2>
-    <form @submit.prevent="onSubmit">
-      <label>Username <input v-model.trim="username" required /></label>
-      <label>Password <input type="password" v-model="password" required minlength="8" /></label>
-      <label>Confirm Password <input type="password" v-model="confirm" required minlength="8" /></label>
-      <div style="display:flex; gap:.5rem; align-items:center;">
-        <button :disabled="pending" type="submit">{{ pending ? 'Creating…' : 'Create Account' }}</button>
-        <RouterLink to="/login">Have an account? Log in</RouterLink>
-      </div>
-      <p v-if="hint" style="color: var(--muted); margin:.5rem 0 0 0;">{{ hint }}</p>
-      <p v-if="error" style="color:#f87171; margin:.5rem 0 0 0;">{{ error }}</p>
-    </form>
-  </div>
+  <form @submit.prevent="onSubmit">
+    <label>Username <input v-model.trim="username" required /></label>
+    <label>Password <input type="password" v-model="password" required minlength="8" /></label>
+    <label>Confirm Password <input type="password" v-model="confirm" required minlength="8" /></label>
+    <div style="display:flex; gap:.5rem; align-items:center;">
+      <button :disabled="pending" type="submit">{{ pending ? 'Creating…' : 'Create Account' }}</button>
+      <RouterLink to="/login">Have an account? Log in</RouterLink>
+    </div>
+    <p v-if="hint" style="color: var(--muted); margin:.5rem 0 0 0;">{{ hint }}</p>
+    <p v-if="error" style="color:#f87171; margin:.5rem 0 0 0;">{{ error }}</p>
+  </form>
 </template>
 
 <script setup lang="ts">

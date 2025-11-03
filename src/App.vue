@@ -1,8 +1,8 @@
 <template>
-  <nav>
+  <nav v-if="route.name !== 'landing'">
     <RouterLink to="/">Library</RouterLink>
-    <RouterLink to="/reader">Reader</RouterLink>
-    <RouterLink to="/annotations">Annotations</RouterLink>
+    <!-- <RouterLink to="/reader">Reader</RouterLink> -->
+    <!-- <RouterLink to="/annotations">Annotations</RouterLink> -->
     <RouterLink to="/stats">Stats</RouterLink>
   <RouterLink v-if="isAuthed" to="/profile">Profile</RouterLink>
     <span style="flex:1"></span>
@@ -14,19 +14,20 @@
     <RouterView />
   </main>
   <footer style="text-align:center; padding: 1rem; color: var(--muted);">
-    Focus Reader
+    FocusReader
   </footer>
   
 </template>
 
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from './stores/auth'
 
 const auth = useAuthStore()
 const { isAuthed } = storeToRefs(auth)
-const logout = () => auth.logout()
+const route = useRoute()
+const logout = () => { auth.logoutAndRedirect?.() }
 </script>
 
 <style scoped>

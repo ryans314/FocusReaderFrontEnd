@@ -4,47 +4,80 @@
     <div v-if="!userId" style="color: var(--muted)">Please log in to view your library.</div>
 
     <div v-else>
-      <div style="display:flex; gap: 1rem; align-items: end; flex-wrap: wrap;">
-        <form @submit.prevent="createDoc" class="card" style="min-width: 280px;">
-          <h3 style="margin-top:0">Create Document</h3>
-          <label>Name <input v-model="newDocName" placeholder="Document name" required /></label>
-
-          <label>Upload EPUB
-            <input ref="fileInput" type="file" accept=".epub,application/epub+zip" @change="onFileChosen" />
-          </label>
-          <div v-if="fileInfo" style="font-size: .9rem; color: var(--muted); display:flex; align-items:center; gap:.5rem;">
-            <span>Selected: {{ fileInfo.name }} ({{ prettyBytes(fileInfo.size) }})</span>
-            <button type="button" @click="clearFile">Clear</button>
-          </div>
-
-          <div v-if="reading" style="color: var(--muted);">
-            Reading file… {{ Math.round(readProgress * 100) }}%
-          </div>
-
-          <label v-if="!fileInfo">EPUB Content (advanced)
-            <textarea v-model="newDocContent" rows="3" placeholder="Paste Base64 (optional if uploading file)"></textarea>
-          </label>
-
-          <button :disabled="pending || creating || !hasLibrary">{{ creating ? 'Creating…' : 'Create' }}</button>
-          <p v-if="!hasLibrary" style="color:#fbbf24; margin:.5rem 0 0 0;">
-            You don't have a library yet. Create one below to enable document uploads.
-          </p>
-        </form>
-
-        <div class="card" style="min-width: 300px; flex: 1;">
-          <h3 style="margin-top:0">Your Documents</h3>
-          <div v-if="pending">Loading…</div>
-          <ul>
-            <li v-for="doc in docs" :key="doc._id" style="display:flex; gap:.5rem; align-items:center;">
-              <strong>{{ doc.name }}</strong>
-              <span style="color:var(--muted)">({{ doc._id }})</span>
-              <span style="flex:1"></span>
-              <button @click="openDoc(doc._id)">Open</button>
-              <button @click="removeDoc(doc._id)">Remove</button>
-            </li>
-          </ul>
+      <div style="display:flex; gap: 1rem; align-items: center; justify-content: space-between;">
+        <div style="display:flex; gap:.5rem; align-items:center;">
+          <h3 style="margin:0">Your Documents</h3>
+        </div>
+        <div>
+          <button @click="showCreate = true" title="Add document" style="font-size:1.1rem; padding:.35rem .6rem;">＋ Add</button>
         </div>
       </div>
+      <div style="margin-top:.5rem">
+        <div class="card" style="min-width: 300px; flex: 1;">
+          <div v-if="pending">Loading…</div>
+          <div v-else-if="hasLibrary && docs.length === 0" class="" style=" text-align:center;">
+            <div style="font-weight:600">No documents uploaded yet</div>
+            <div style="color:var(--muted); margin-top:.5rem">Add a document to get started.</div>
+            <div style="margin-top:.75rem"><button @click="showCreate = true">＋ Add document</button></div>
+          </div>
+          <div v-else class="docs-grid">
+            <div v-for="doc in docs" :key="doc._id" class="doc-card card">
+              <div class="doc-card-inner">
+                <div class="doc-preview-area">
+                  <div class="doc-preview" :ref="el => setPreviewEl(el, doc._id)"></div>
+                  <div v-if="!previewLoaded[doc._id]" class="doc-preview-placeholder">
+                    <div style="padding:8px; color:var(--muted); font-size:.9rem;">No preview</div>
+                    <div style="display:flex; gap:.5rem;">
+                      <button @click="togglePreview(doc)">{{ previewLoading[doc._id] ? 'Loading…' : 'Show preview' }}</button>
+                    </div>
+                  </div>
+                </div>
+                <div style="padding:.5rem; display:flex; flex-direction:column; gap:.5rem;">
+                  <div style="font-weight:600;">{{ doc.name }}</div>
+                  <div style="display:flex; gap:.5rem;">
+                    <button @click="openDoc(doc._id)">Open</button>
+                    <button @click="renameDoc(doc._id)">Rename</button>
+                    <button @click="removeDoc(doc._id)">Remove</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create modal overlay (with fade transition) -->
+      <transition name="fade">
+        <div v-if="showCreate" @click.self="showCreate = false" class="create-overlay">
+          <div class="card create-panel">
+            <button type="button" class="create-close" style="color: var(--muted);" @click="showCreate = false" aria-label="Close">✕</button>
+            <form @submit.prevent="createDoc">
+              <h3 style="margin-top:0">Create Document</h3>
+              <label>Name <input v-model="newDocName" placeholder="Document name" required /></label>
+
+              <label>Upload EPUB
+                <input ref="fileInput" type="file" accept=".epub,application/epub+zip" @change="onFileChosen" />
+              </label>
+              <div v-if="fileInfo" style="font-size: .9rem; color: var(--muted); display:flex; align-items:center; gap:.5rem;">
+                <span>Selected: {{ fileInfo.name }} ({{ prettyBytes(fileInfo.size) }})</span>
+                <button type="button" @click="clearFile">Clear</button>
+              </div>
+
+              <div v-if="reading" style="color: var(--muted);">
+                Reading file… {{ Math.round(readProgress * 100) }}%
+              </div>
+
+              <div style="display:flex; gap:.5rem; margin-top:.5rem;">
+                <button :disabled="pending || creating || !hasLibrary" type="submit">{{ creating ? 'Creating…' : 'Create' }}</button>
+                <button type="button" @click="showCreate = false">Cancel</button>
+              </div>
+              <p v-if="!hasLibrary" style="color:#fbbf24; margin:.5rem 0 0 0;">
+                You don't have a library yet. Create one below to enable document uploads.
+              </p>
+            </form>
+          </div>
+        </div>
+      </transition>
       <div v-if="!hasLibrary" class="card" style="margin-top:1rem;">
         <h3 style="margin-top:0">Set up your library</h3>
         <p>Create your personal library to store documents.</p>
@@ -56,12 +89,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
-import { createDocument, createLibrary, getDocumentsInLibrary, getLibraryByUser, removeDocument, getUserDefaultSettings, createDocumentSettings } from '@/lib/api/endpoints'
+import { createDocument, createLibrary, getDocumentsInLibrary, getLibraryByUser, removeDocument, getUserDefaultSettings, createDocumentSettings, renameDocument } from '@/lib/api/endpoints'
 import type { Document } from '@/lib/api/types'
+import JSZip from 'jszip'
 import type { AxiosError } from 'axios'
 
 const auth = useAuthStore()
@@ -84,29 +118,199 @@ const readProgress = ref(0)
 const reading = ref(false)
 
 const hasLibrary = computed(() => !!libraryId.value)
+const showCreate = ref(false)
+// Preview state and helpers
+const previewEls = new Map<string, HTMLElement | null>()
+const previewRenditions = new Map<string, { book?: any; rendition?: any }>()
+const previewLoading = ref<Record<string, boolean>>({})
+const previewLoaded = ref<Record<string, boolean>>({})
+const previewError = ref<Record<string, string | undefined>>({})
+let previewObserver: IntersectionObserver | null = null
 
+function setPreviewEl(el: any | null, id: string) {
+  try {
+    if (!id) return
+    const h = (el as HTMLElement) || null
+    previewEls.set(id, h)
+    if (h) {
+      try { h.dataset.previewId = id } catch {}
+    } else {
+      // removed element
+      try { previewEls.delete(id) } catch {}
+    }
+    // If the observer exists and we have an element, start observing it so
+    // previews auto-load when the card enters the viewport.
+    try { if (h && previewObserver) previewObserver.observe(h) } catch {}
+  } catch {}
+}
+
+function togglePreview(doc: Document) {
+  // Fallback/manual trigger in case auto-load hasn't fired yet
+  try {
+    loadPreviewForDoc(doc).catch(() => {})
+  } catch {}
+}
+
+onBeforeUnmount(() => {
+  try {
+    for (const [id, entry] of previewRenditions.entries()) {
+      try { entry.rendition?.destroy?.() } catch {}
+      try { entry.book?.destroy?.() } catch {}
+      const el = previewEls.get(id)
+      if (el) el.innerHTML = ''
+    }
+    previewRenditions.clear()
+    previewEls.clear()
+    try { previewObserver?.disconnect() } catch {}
+  } catch {}
+})
+
+async function loadPreviewForDoc(doc: Document) {
+  const id = doc._id
+  if (!id) return
+  if (previewLoaded.value[id] || previewLoading.value[id]) return
+  previewLoading.value = { ...previewLoading.value, [id]: true }
+  previewError.value = { ...previewError.value, [id]: undefined }
+  try {
+    const container = previewEls.get(id)
+    if (!container) throw new Error('Preview container not available')
+    // clear any existing content
+    container.innerHTML = ''
+
+    // First try: extract a cover image from the EPUB zip (cover href or first image)
+    try {
+      const zip = await JSZip.loadAsync(sanitizeBase64(doc.epubContent), { base64: true })
+      const containerXmlFile = zip.file('META-INF/container.xml')
+      let rootPath = ''
+      if (containerXmlFile) {
+        const containerXml = await containerXmlFile.async('string')
+        const m = containerXml.match(/full-path="([^"]+)"/)
+        if (m) rootPath = m[1]
+      }
+      if (!rootPath) {
+        // fallback: try to find an OPF file in the zip
+        const opfCandidate = Object.keys(zip.files).find(p => p.toLowerCase().endsWith('.opf'))
+        if (opfCandidate) rootPath = opfCandidate
+      }
+      let coverFound = false
+      if (rootPath) {
+        const opfFile = zip.file(rootPath)
+        if (opfFile) {
+          const opfXml = await opfFile.async('string')
+          const parser = new DOMParser()
+          const docOpf = parser.parseFromString(opfXml, 'application/xml')
+          // 1) look for <meta name="cover" content="cover-image-id"/>
+          const metaCover = Array.from(docOpf.getElementsByTagName('meta')).find(m => (m.getAttribute('name') || '').toLowerCase() === 'cover')
+          let href: string | null = null
+          const rootDir = rootPath.includes('/') ? rootPath.slice(0, rootPath.lastIndexOf('/') + 1) : ''
+          if (metaCover && metaCover.getAttribute('content')) {
+            const coverId = metaCover.getAttribute('content') || ''
+            const item = Array.from(docOpf.getElementsByTagName('item')).find(it => (it.getAttribute('id') || '') === coverId)
+            if (item && item.getAttribute('href')) href = item.getAttribute('href') || null
+          }
+          // 2) if no cover meta, pick first manifest item that is an image
+          if (!href) {
+            const imageItem = Array.from(docOpf.getElementsByTagName('item')).find(it => {
+              const mt = (it.getAttribute('media-type') || '')
+              return mt.startsWith('image/')
+            })
+            if (imageItem && imageItem.getAttribute('href')) href = imageItem.getAttribute('href') || null
+          }
+          if (href) {
+            // resolve relative to OPF root
+            const resolved = (rootDir + href).replace(/\\/g, '/')
+            const imgFile = zip.file(resolved) || zip.file(href)
+            if (imgFile) {
+              const imgBase64 = await imgFile.async('base64')
+              // try to determine mime from media-type in manifest if available
+              let mime = ''
+              const manifestItem = Array.from(docOpf.getElementsByTagName('item')).find(it => (it.getAttribute('href') || '') === href || (rootDir + (it.getAttribute('href') || '')).replace(/\\/g, '/') === resolved)
+              if (manifestItem && manifestItem.getAttribute('media-type')) mime = manifestItem.getAttribute('media-type') || ''
+              if (!mime) {
+                // fallback based on file extension
+                const ext = href.split('.').pop()?.toLowerCase() || ''
+                if (ext === 'png') mime = 'image/png'
+                else if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg'
+                else if (ext === 'gif') mime = 'image/gif'
+              }
+              const src = `data:${mime || 'image/*'};base64,${imgBase64}`
+              const img = document.createElement('img')
+              img.src = src
+              img.style.maxWidth = '100%'
+              img.style.maxHeight = '100%'
+              img.style.objectFit = 'contain'
+              container.appendChild(img)
+              previewLoaded.value = { ...previewLoaded.value, [id]: true }
+              coverFound = true
+            }
+          }
+        }
+      }
+      if (coverFound) {
+        return
+      }
+    } catch (zipErr) {
+      // if anything fails while extracting a cover, we'll fall back to rendering via epub.js
+      // ignore and continue
+    }
+
+    // Fallback: render first page using epub.js as before
+    const mod: any = await import('epubjs')
+    const ePub = mod && mod.default ? mod.default : mod
+    const book = ePub()
+    const rendition = book.renderTo(container, {
+      width: '180px',
+      height: '240px',
+      flow: 'paginated',
+      spread: 'none'
+    })
+    previewRenditions.set(id, { book, rendition })
+    // open as base64 (server stores base64)
+    await book.open(sanitizeBase64(doc.epubContent), 'base64')
+    await rendition.display()
+    previewLoaded.value = { ...previewLoaded.value, [id]: true }
+  } catch (err: any) {
+    previewError.value = { ...previewError.value, [id]: err?.message || 'Preview failed' }
+  } finally {
+    previewLoading.value = { ...previewLoading.value, [id]: false }
+  }
+}
 async function load() {
-  if (!userId.value) return
+  if (!userId.value) {
+    libraryId.value = null
+    docs.value = []
+    return
+  }
   pending.value = true
   error.value = null
   try {
-    const libRes = await getLibraryByUser(userId.value)
-    if ('error' in libRes) throw new Error(libRes.error)
-    libraryId.value = libRes[0]?.library?._id ?? null
-    if (libraryId.value) {
-      const docsRes = await getDocumentsInLibrary(libraryId.value)
-      if ('error' in docsRes) throw new Error(docsRes.error)
-      docs.value = docsRes.map((d) => d.document)
+    const libRes: any = await getLibraryByUser(userId.value)
+    if (Array.isArray(libRes) && libRes[0]?.library) {
+      libraryId.value = libRes[0].library._id
+    } else {
+      libraryId.value = null
+      docs.value = []
+      return
+    }
+    const docsRes: any = await getDocumentsInLibrary(libraryId.value!)
+    if (Array.isArray(docsRes)) {
+      docs.value = docsRes.map((d: any) => d.document)
     } else {
       docs.value = []
     }
+    // Ensure the observer watches any preview elements already mounted
+    try {
+      for (const d of docs.value) {
+        const el = previewEls.get(d._id)
+        if (el && previewObserver) previewObserver.observe(el)
+      }
+    } catch {}
   } catch (e: any) {
     error.value = e?.message ?? 'Failed to load library'
   } finally {
     pending.value = false
   }
 }
-
 async function createDoc() {
   if (!userId.value || !libraryId.value) return
   pending.value = true
@@ -131,16 +335,18 @@ async function createDoc() {
           console.warn('createDocumentSettings failed:', setRes.error)
         }
       }
-    } catch (e) {
-      // Non-fatal; user can still open and the reader will handle missing settings
-      console.warn('Failed to create document settings:', e)
+    } catch (err) {
+      console.warn('Failed to create document settings:', err)
     }
+
     newDocName.value = ''
     newDocContent.value = ''
     epubBase64.value = ''
     fileInfo.value = null
     if (fileInput.value) fileInput.value.value = ''
     await load()
+    // close the modal if open
+    try { showCreate.value = false } catch {}
   } catch (e: any) {
     const apiError = (e as AxiosError<{ error?: string }>)
     const backendMessage = apiError.response?.data?.error
@@ -174,7 +380,48 @@ async function removeDoc(id: string) {
   }
 }
 
-onMounted(load)
+async function renameDoc(id: string) {
+  if (!userId.value) return
+  const current = docs.value.find(d => d._id === id)?.name || ''
+  const newName = prompt('Rename document', current)
+  if (newName === null) return
+  const trimmed = newName.trim()
+  if (!trimmed) {
+    error.value = 'Name cannot be empty'
+    return
+  }
+  if (trimmed === current) return
+  pending.value = true
+  try {
+    const res = await renameDocument(userId.value, trimmed, id)
+    if ('error' in res) throw new Error(res.error)
+    await load()
+  } catch (e: any) {
+    error.value = e?.message ?? 'Failed to rename document'
+  } finally {
+    pending.value = false
+  }
+}
+
+onMounted(() => {
+  // Create IntersectionObserver to lazy-load previews when card enters viewport
+  try {
+    previewObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        try {
+          if (!entry.isIntersecting) continue
+          const el = entry.target as HTMLElement
+          const id = el?.dataset?.previewId
+          if (!id) continue
+          const doc = docs.value.find(d => d._id === id)
+          if (doc) loadPreviewForDoc(doc).catch(() => {})
+          try { previewObserver?.unobserve(el) } catch {}
+        } catch {}
+      }
+    }, { root: null, rootMargin: '200px', threshold: 0.05 })
+  } catch {}
+  load()
+})
 
 function prettyBytes(bytes: number) {
   if (bytes === 0) return '0 B'
@@ -264,3 +511,46 @@ function openDoc(id: string) {
   router.push({ name: 'reader-doc', params: { documentId: id } })
 }
 </script>
+
+<style scoped>
+.create-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.create-panel { width: 520px; max-width: 95%; position: relative; }
+.create-panel .create-close { position: absolute; top: 8px; right: 8px; background: transparent; border: none; font-size: 1.15rem; cursor: pointer; padding: 6px; }
+.create-panel .create-close:hover { background: rgba(0,0,0,0.04); border-radius: 4px; }
+
+/* Fade transition -- quick and subtle */
+.fade-enter-active, .fade-leave-active {
+  transition: opacity .18s ease;
+}
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+.fade-enter-to, .fade-leave-from { opacity: 1; }
+
+.docs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+}
+.doc-card { padding: 0; display:flex; }
+.doc-card-inner { display:flex; flex-direction:column; width:100%; }
+.doc-preview-area { height: 160px; background: #fff; display:flex; align-items:center; justify-content:center; border-bottom:1px solid #eee; }
+.doc-preview { width: 180px; height: 140px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+.doc-preview-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.4rem; }
+/* Ensure any inserted cover image is centered and maintains aspect ratio */
+.doc-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  margin: auto;
+  object-fit: contain;
+  object-position: center;
+}
+
+</style>
