@@ -37,6 +37,18 @@
       </div>
 
       <div class="toolbar-section">
+        <label style="display:flex; align-items:center; gap:.4rem;">
+          <input type="checkbox" v-model="cursorFocusEnabled" @change="onToggleCursorFocus" />
+          <span>Cursor focus</span>
+        </label>
+        <template v-if="cursorFocusEnabled">
+          <button @click="decreaseCursorFocusRadius" :disabled="cursorFocusRadius <= 80">−</button>
+          <span style="min-width:4ch; text-align:center;">{{ cursorFocusRadius }}px</span>
+          <button @click="increaseCursorFocusRadius" :disabled="cursorFocusRadius >= 400">+</button>
+        </template>
+      </div>
+
+      <div class="toolbar-section">
         <span style="color:var(--muted);">Font</span>
         <select class="toc-select" v-model="fontFamily" @change="onFontChange">
           <option v-for="opt in fontOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
@@ -141,6 +153,14 @@ const fontPx = ref<number | null>(null)
 const lineHeightPx = ref<number | null>(null)
 const lineHeightRatio = ref<number>(1.5)
 const currentTextSettingsId = ref<string | null>(null)
+// Cursor focus state
+const cursorFocusEnabled = ref(false)
+const cursorFocusRadius = ref(180)
+const cursorFocusBlur = ref(8)
+const cursorOverlays = new Map<Document, HTMLElement>()
+const cursorLastPos = new Map<Document, { x: number; y: number }>()
+const cursorMoveHandlers = new Map<Document, (e: MouseEvent) => void>()
+const cursorLeaveHandlers = new Map<Document, (e: MouseEvent) => void>()
 // Default to Times New Roman for a book-like appearance
 const fontFamily = ref<string>('"Times New Roman", Times, serif')
 const fontOptions = [
@@ -1522,10 +1542,16 @@ function attachIframeDocListeners() {
             // pointer events can be more reliable in some user agents; attach them too
             try { doc.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
             try { doc.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
+            // Keyboard navigation inside iframe
+            try { doc.addEventListener('keydown', onKeyDown, true) } catch {}
             // Hover handlers for annotation note tooltip
             try { doc.addEventListener('pointerover', onIframePointerOver, true) } catch {}
             try { doc.addEventListener('pointerout', onIframePointerOut, true) } catch {}
             iframeDocListenerTargets.push(doc)
+            // Ensure cursor focus overlay is present if enabled
+            if (cursorFocusEnabled.value) {
+              try { ensureCursorFocusForDoc(doc) } catch {}
+            }
             try {
               const win = doc.defaultView
               if (win && !iframeWinListenerTargets.includes(win)) {
@@ -1534,6 +1560,7 @@ function attachIframeDocListeners() {
                 // win.addEventListener('click', onIframeMouseDown, true)
                 try { win.addEventListener('pointerdown', onIframeMouseDown, true) } catch {}
                 try { win.addEventListener('pointerup', onIframeMouseDown, true) } catch {}
+                try { win.addEventListener('keydown', onKeyDown, true) } catch {}
                 iframeWinListenerTargets.push(win)
               }
             } catch (e) { console.debug('[reader] failed to attach window listeners', e) }
@@ -1563,6 +1590,7 @@ function detachAllIframeDocListeners() {
   try { doc.removeEventListener('click', onIframeMouseDown) } catch {}
   try { doc.removeEventListener('pointerdown', onIframeMouseDown) } catch {}
   try { doc.removeEventListener('pointerup', onIframeMouseDown) } catch {}
+  try { doc.removeEventListener('keydown', onKeyDown, true) } catch {}
   try { doc.removeEventListener('pointerover', onIframePointerOver) } catch {}
   try { doc.removeEventListener('pointerout', onIframePointerOut) } catch {}
     }
@@ -1574,6 +1602,7 @@ function detachAllIframeDocListeners() {
   try { win.removeEventListener('click', onIframeMouseDown, true) } catch {}
   try { win.removeEventListener('pointerdown', onIframeMouseDown, true) } catch {}
   try { win.removeEventListener('pointerup', onIframeMouseDown, true) } catch {}
+  try { win.removeEventListener('keydown', onKeyDown, true) } catch {}
     }
   } catch {}
   iframeWinListenerTargets.length = 0
@@ -1881,6 +1910,7 @@ async function renderEpubFromBase64(b64: string) {
     renditionInstance = null
     resetNavigationState()
     try { detachAllIframeDocListeners() } catch {}
+    try { removeCursorFocusFromAllDocs() } catch {}
   }
 }
 
@@ -2750,6 +2780,113 @@ function persistTextSettings() {
     const lh = Math.max(10, Math.round(size * ratio))
     editSettings(currentTextSettingsId.value, fontFamily.value, size, lh).catch(() => {})
   } catch {}
+}
+
+// Cursor focus feature
+function ensureCursorFocusForDoc(doc: Document) {
+  try {
+    if (cursorOverlays.has(doc)) return
+    const overlay = doc.createElement('div')
+    overlay.className = 'cursor-focus-overlay'
+    overlay.style.position = 'fixed'
+    overlay.style.left = '0'
+    overlay.style.top = '0'
+    overlay.style.right = '0'
+    overlay.style.bottom = '0'
+    overlay.style.pointerEvents = 'none'
+    overlay.style.zIndex = '2147483647'
+    overlay.style.background = 'rgba(0,0,0,0)'
+    ;(overlay.style as any).backdropFilter = `blur(${cursorFocusBlur.value}px)`
+    ;(overlay.style as any).WebkitBackdropFilter = `blur(${cursorFocusBlur.value}px)`
+    doc.documentElement.appendChild(overlay)
+    cursorOverlays.set(doc, overlay)
+
+    const initialX = Math.floor((doc.defaultView?.innerWidth || 800) / 2)
+    const initialY = Math.floor((doc.defaultView?.innerHeight || 600) / 2)
+    cursorLastPos.set(doc, { x: initialX, y: initialY })
+    updateCursorOverlayMask(doc)
+
+    const onMove = (e: MouseEvent) => {
+      try {
+        cursorLastPos.set(doc, { x: e.clientX, y: e.clientY })
+        updateCursorOverlayMask(doc)
+      } catch {}
+    }
+    const onLeave = () => {
+      try {
+        // Keep last position; optionally could center
+        updateCursorOverlayMask(doc)
+      } catch {}
+    }
+    doc.addEventListener('mousemove', onMove, true)
+    doc.addEventListener('mouseleave', onLeave, true)
+    cursorMoveHandlers.set(doc, onMove)
+    cursorLeaveHandlers.set(doc, onLeave)
+  } catch {}
+}
+
+function updateCursorOverlayMask(doc: Document) {
+  try {
+    const overlay = cursorOverlays.get(doc)
+    if (!overlay) return
+    const pos = cursorLastPos.get(doc) || { x: (doc.defaultView?.innerWidth || 800) / 2, y: (doc.defaultView?.innerHeight || 600) / 2 }
+    const r = cursorFocusRadius.value
+    const mask = `radial-gradient(circle at ${pos.x}px ${pos.y}px, transparent ${r}px, black ${r + 1}px)`
+    ;(overlay.style as any).webkitMaskImage = mask
+    ;(overlay.style as any).maskImage = mask
+  } catch {}
+}
+
+function removeCursorFocusForDoc(doc: Document) {
+  try {
+    const overlay = cursorOverlays.get(doc)
+    if (overlay && overlay.parentNode) {
+      try { overlay.parentNode.removeChild(overlay) } catch {}
+    }
+  } catch {}
+  try {
+    const mv = cursorMoveHandlers.get(doc)
+    if (mv) doc.removeEventListener('mousemove', mv, true)
+    const lv = cursorLeaveHandlers.get(doc)
+    if (lv) doc.removeEventListener('mouseleave', lv, true)
+  } catch {}
+  cursorOverlays.delete(doc)
+  cursorMoveHandlers.delete(doc)
+  cursorLeaveHandlers.delete(doc)
+  cursorLastPos.delete(doc)
+}
+
+function applyCursorFocusToAllDocs() {
+  try {
+    const iframes = readerEl.value?.querySelectorAll('iframe') || []
+    iframes.forEach((iframe) => {
+      const doc = (iframe as HTMLIFrameElement).contentDocument
+      if (!doc) return
+      if (cursorFocusEnabled.value) ensureCursorFocusForDoc(doc)
+      else removeCursorFocusForDoc(doc)
+    })
+  } catch {}
+}
+
+function removeCursorFocusFromAllDocs() {
+  try {
+    for (const doc of Array.from(cursorOverlays.keys())) removeCursorFocusForDoc(doc)
+  } catch {}
+}
+
+function onToggleCursorFocus() {
+  if (cursorFocusEnabled.value) applyCursorFocusToAllDocs()
+  else removeCursorFocusFromAllDocs()
+}
+
+function increaseCursorFocusRadius() {
+  cursorFocusRadius.value = Math.min(400, cursorFocusRadius.value + 20)
+  for (const doc of cursorOverlays.keys()) updateCursorOverlayMask(doc)
+}
+
+function decreaseCursorFocusRadius() {
+  cursorFocusRadius.value = Math.max(80, cursorFocusRadius.value - 20)
+  for (const doc of cursorOverlays.keys()) updateCursorOverlayMask(doc)
 }
 
 function increaseLineHeight() {
