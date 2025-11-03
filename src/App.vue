@@ -13,7 +13,7 @@
   <main>
     <RouterView />
   </main>
-  <footer style="text-align:center; padding: 1rem; color: var(--muted);">
+  <footer style="text-align:center; padding: 1rem; color: var(--muted); width: 100%; position: fixed; bottom: 0;">
     FocusReader
   </footer>
   

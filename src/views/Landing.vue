@@ -1,5 +1,5 @@
 <template>
-  <div class="landing">
+  <div class="landing" style="max-width: 756px; margin-left: auto; margin-right: auto;">
     <div class="hero card">
       <h1>FocusReader</h1>
       <p class="tagline">Read with focus. Annotate with ease.</p>
