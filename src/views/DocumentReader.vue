@@ -130,10 +130,11 @@ const currentChapter = ref('')
 const selectedToc = ref('')
 const tocOptions = ref<Array<{ label: string; href: string }>>([])
 const fontScale = ref(100)
+// Default to Times New Roman for a book-like appearance
 const fontFamily = ref<string>('"Times New Roman", Times, serif')
 const fontOptions = [
   { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
-  { label: 'Sans-serif', value: 'sans-serif' },
+  { label: 'Special Elite', value: '"Special Elite", monospace' },
   { label: 'Georgia', value: 'Georgia, serif' },
   { label: 'Garamond', value: 'Garamond, serif' },
   { label: 'Segoe UI', value: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif' },
@@ -141,6 +142,24 @@ const fontOptions = [
   { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
   { label: 'Monospace', value: 'monospace' }
 ]
+
+// Google Fonts URL for Special Elite. We inject this into host and iframe docs when needed.
+const specialEliteHref = 'https://fonts.googleapis.com/css2?family=Special+Elite&display=swap'
+
+function ensureSpecialEliteLoadedInDocument(doc?: Document | null) {
+  try {
+    if (!doc) return
+    const links = Array.from(doc.getElementsByTagName('link'))
+    for (const l of links) {
+      try { if (l.getAttribute('href') === specialEliteHref) return } catch {}
+    }
+    const link = doc.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = specialEliteHref
+    const target = doc.head || doc.getElementsByTagName('head')?.[0] || doc.documentElement
+    try { target.appendChild(link) } catch { try { doc.documentElement.appendChild(link) } catch {} }
+  } catch {}
+}
 const pagesPerSpread = ref(2)
 const locationsPerSpread = ref(1)
 
@@ -817,6 +836,19 @@ function parseDetailedCfi(cfi: string): {
     start?: { textIndex: number; charOffset: number } | null
     end?: { textIndex: number; charOffset: number } | null
   } = { elementSteps: [] }
+    // If user selected Special Elite, make sure the font stylesheet is available
+    try {
+      if ((fontFamily.value || '').includes('Special Elite')) {
+        try { ensureSpecialEliteLoadedInDocument(document) } catch {}
+        // also inject into each iframe doc we control
+        try {
+          const iframes = readerEl.value?.querySelectorAll('iframe') || []
+          for (const f of Array.from(iframes) as HTMLIFrameElement[]) {
+            try { ensureSpecialEliteLoadedInDocument(f.contentDocument) } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
   try {
     let body = normalizeCfi(cfi)
     const bangIdx = body.indexOf('!')
@@ -1526,6 +1558,8 @@ function attachIframeDocListeners() {
               }
             } catch (e) { console.debug('[reader] failed to attach window listeners', e) }
             setTimeout(() => syncHighlightAttributes(doc), 20)
+            // Ensure Special Elite font (web) is loaded into iframe docs when present
+            // try { setTimeout(() => ensureSpecialEliteLoadedInDocument(doc), 30) } catch {}
           }
         }
         const doc = frame.contentDocument
