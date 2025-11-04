@@ -2,7 +2,7 @@
   <div class="card" style="max-width: 860px; margin: 0 auto;">
     <h2 style="margin-top:0;">Profile</h2>
 
-    <section style="margin-bottom:1rem;">
+    <section>
       <h3>Account</h3>
       <div style="display:flex; align-items:center; gap:.75rem;">
         <label style="color:var(--muted);">Username:</label>
@@ -10,7 +10,7 @@
       </div>
     </section>
 
-    <section style="margin-bottom:1.5rem;">
+    <section>
       <h3>Change password</h3>
       <div style="display:grid; grid-template-columns: 160px 1fr; gap:.5rem 1rem; align-items:center; max-width:600px;">
         <label for="current">Current password</label>
@@ -205,3 +205,9 @@ async function onSaveSettings() {
   }
 }
 </script>
+
+<style lang="css" scoped>
+    section {
+        margin-bottom: 2rem;
+    }
+</style>

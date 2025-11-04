@@ -1,5 +1,6 @@
 <template>
   <nav v-if="route.name !== 'landing'">
+    <h3 style="margin: 0;" class="logo">FocusReader</h3>
     <RouterLink to="/">Library</RouterLink>
     <!-- <RouterLink to="/reader">Reader</RouterLink> -->
     <!-- <RouterLink to="/annotations">Annotations</RouterLink> -->
@@ -13,10 +14,7 @@
   <main>
     <RouterView />
   </main>
-  <footer style="text-align:center; padding: 1rem; color: var(--muted); width: 100%; position: fixed; bottom: 0;">
-    FocusReader
-  </footer>
-  
+
 </template>
 
 <script setup lang="ts">
@@ -32,6 +30,7 @@ const logout = () => { auth.logoutAndRedirect?.() }
 
 <style scoped>
 nav a.router-link-active {
-  text-decoration: underline;
+  /* text-decoration: underline; */
+  font-weight: 700;
 }
 </style>

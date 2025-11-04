@@ -5,7 +5,7 @@
       <p class="tagline">Read with focus. Annotate with ease.</p>
       <div class="cta">
         <button class="btn" @click="openModal('login')">Log in</button>
-        <button class="btn secondary" @click="openModal('signup')">Sign up</button>
+        <button class="btn" @click="openModal('signup')">Sign up</button>
       </div>
     </div>
 
@@ -69,6 +69,11 @@ function closeModal() {
   flex-direction: column;
   gap: 1.25rem;
 }
+
+.landing p {
+    font-size: 0.875rem;
+}
+
 .hero {
   text-align: center;
   padding: 2rem 1.5rem;
@@ -93,6 +98,11 @@ function closeModal() {
 .features { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 1rem; }
 .feature h3 { margin: 0 0 .25rem; }
 .feature p { margin: 0; color: var(--muted); }
+
+/* Use Special Elite for landing headings */
+.hero h1, .feature h3 {
+  font-family: 'Special Elite', Georgia, serif;
+}
 
 /* Modal overlay styles */
 .overlay {

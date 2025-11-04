@@ -1,37 +1,81 @@
+@import url('https://fonts.googleapis.com/css2?family=Special+Elite&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Baskervville:wght@500;700&display=swap');
+
 :root {
-  --bg: #0f172a;
-  --fg: #e2e8f0;
-  --muted: #94a3b8;
-  --primary: #22c55e;
+  /* Brand palette (approx from swatches) */
+  --brand-red: #8e2f23;      /* accent / primary */
+  --brand-brown: #9b7a5a;    /* secondary / muted accent */
+  --brand-cream: #f8e2c8;    /* base background */
+  --brand-charcoal: #2f2f2d; /* primary text / headings */
+
+  /* App theme tokens */
+  --bg: var(--brand-cream);
+  --fg: var(--brand-charcoal);
+  --muted: #7f6e5d;         /* softer text */
+  --primary: var(--brand-red);
+  --accent: var(--brand-brown);
+  --surface: #fff3e6;       /* cards, inputs */
+  --border: #dcc7ae;        /* borders / dividers */
+  --btn-fg: #ffffff;        /* button text on primary */
 }
 
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; }
 body {
   margin: 0;
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  /* Body / non-heading copy uses Baskervville across the app */
+  font-family: 'Baskervville', Georgia, serif;
   background: var(--bg);
   color: var(--fg);
 }
 a { color: var(--primary); text-decoration: none; }
 nav {
-  display: flex; gap: 1rem; padding: 1rem; border-bottom: 1px solid #1f2937;
+  display: flex; 
+  align-items: center;
+  gap: 1rem; 
+  padding: 1rem; 
+  border-bottom: 1px solid var(--border);
+  font-family: 'Special Elite', Georgia, serif;
+
 }
-main { padding: 1rem; }
+.logo {
+    pointer-events: none;
+    font-size: 1.3rem;
+}
+/* Headings use Special Elite for a display look */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Special Elite', Georgia, serif;
+}
+main { 
+    padding: 1rem;
+    margin-bottom: 3rem;
+}
+
 button {
   background: var(--primary);
-  color: #062312;
+  color: var(--btn-fg);
   border: none;
   padding: 0.5rem 0.9rem;
   border-radius: 0.4rem;
   cursor: pointer;
 }
+button:hover { filter: brightness(0.95); }
 input, select, textarea {
-  background: #0b1220;
+  background: var(--surface);
   color: var(--fg);
-  border: 1px solid #1f2937;
+  border: 1px solid var(--border);
   padding: 0.5rem 0.7rem;
   border-radius: 0.3rem;
 }
 form { display: grid; gap: 0.6rem; max-width: 420px; }
-.card { background: #0b1220; border: 1px solid #1f2937; padding: 1rem; border-radius: 0.6rem; }
+
+.card { 
+    background: var(--surface); 
+    border: 1px solid var(--border); 
+    padding: 1rem; 
+    border-radius: 0.6rem; 
+}
+
+.card-no-background {
+    padding: 1rem;
+}

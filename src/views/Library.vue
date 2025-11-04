@@ -1,6 +1,6 @@
 <template>
-  <div class="card">
-    <h2>Library</h2>
+  <div class="card-no-background">
+    <h2 style="margin-top: 0;">Library</h2>
     <div v-if="!userId" style="color: var(--muted)">Please log in to view your library.</div>
 
     <div v-else>
@@ -9,11 +9,11 @@
           <h3 style="margin:0">Your Documents</h3>
         </div>
         <div>
-          <button @click="showCreate = true" title="Add document" style="font-size:1.1rem; padding:.35rem .6rem;">＋ Add</button>
+          <button @click="showCreate = true" title="Add document" style="">＋ Add Document</button>
         </div>
       </div>
       <div style="margin-top:.5rem">
-        <div class="card" style="min-width: 300px; flex: 1;">
+        <div class="card-no-background" style="min-width: 300px; flex: 1;">
           <div v-if="pending">Loading…</div>
           <div v-else-if="hasLibrary && docs.length === 0" class="" style=" text-align:center;">
             <div style="font-weight:600">No documents uploaded yet</div>
@@ -78,11 +78,6 @@
           </div>
         </div>
       </transition>
-      <div v-if="!hasLibrary" class="card" style="margin-top:1rem;">
-        <h3 style="margin-top:0">Set up your library</h3>
-        <p>Create your personal library to store documents.</p>
-        <button :disabled="pending || creatingLib" @click="createLib">{{ creatingLib ? 'Creating…' : 'Create Library' }}</button>
-      </div>
       <div v-if="error" style="color:#f87171; margin-top:.5rem;">{{ error }}</div>
     </div>
   </div>
@@ -538,9 +533,14 @@ function openDoc(id: string) {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 1rem;
 }
-.doc-card { padding: 0; display:flex; }
+.doc-card { 
+    padding: 0; 
+    display:flex; 
+    overflow: hidden;
+    box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.1);
+}
 .doc-card-inner { display:flex; flex-direction:column; width:100%; }
-.doc-preview-area { height: 160px; background: #fff; display:flex; align-items:center; justify-content:center; border-bottom:1px solid #eee; }
+.doc-preview-area { height: 160px; background: var(--surface); display:flex; align-items:center; justify-content:center; border-bottom:1px solid var(--border); }
 .doc-preview { width: 180px; height: 140px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
 .doc-preview-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.4rem; }
 /* Ensure any inserted cover image is centered and maintains aspect ratio */
