@@ -70,7 +70,7 @@
 import { onMounted, ref, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
-import { getUserDetails, changePassword, getUserDefaultSettings, editSettings, createUserSettings } from '@/lib/api/endpoints'
+import { getUserDetails, changePassword, getUserDefaultSettings, editSettings } from '@/lib/api/endpoints'
 
 const auth = useAuthStore()
 const { userId } = storeToRefs(auth)
@@ -189,13 +189,6 @@ async function onSaveSettings() {
       const res = await editSettings(settingsId.value, font.value, fontSize.value, lh)
       if ((res as any)?.error) saveError.value = (res as any).error
       else saveSuccess.value = true
-    } else {
-      const res = await createUserSettings(font.value, fontSize.value, lh, userId.value)
-      if ((res as any)?.error) saveError.value = (res as any).error
-      else {
-        settingsId.value = (res as any)?.settings || null
-        saveSuccess.value = true
-      }
     }
   } catch (e: any) {
     saveError.value = e?.message || 'Network error'

@@ -46,14 +46,6 @@ export async function getUserDetails(user: ID) {
   return data
 }
 
-export async function getAllUsers() {
-  const { data } = await api.post<Array<{ id: ID; username: string }> | { error: string }>(
-    '/api/Profile/_getAllUsers',
-    {}
-  )
-  return data
-}
-
 // Library
 export async function createLibrary(user: ID) {
   const { data } = await api.post<IdResp<'library'> | { error: string }>(
@@ -128,14 +120,6 @@ export async function getDocumentDetails(document: ID) {
 }
 
 // Annotation
-export async function createTag(creator: ID, title: string) {
-  const { data } = await api.post<IdResp<'tag'> | { error: string }>(
-    '/api/Annotation/createTag',
-    { creator, title }
-  )
-  return data
-}
-
 export async function createAnnotation(payload: {
   creator: ID
   document: ID
@@ -195,13 +179,7 @@ export async function searchAnnotations(user: ID, document: ID, criteria: string
 }
 
 // Focus Stats
-export async function initUserFocusStats(user: ID) {
-  const { data } = await api.post<IdResp<'focusStats'> | { error: string }>(
-    '/api/FocusStats/initUser',
-    { user }
-  )
-  return data
-}
+
 
 export async function startSession(user: ID, document: ID, library: ID) {
   const { data } = await api.post<IdResp<'focusSession'> | { error: string }>(
@@ -244,13 +222,6 @@ export async function getSessions(user: ID) {
 }
 
 // Text Settings
-export async function createUserSettings(font: string, fontSize: number, lineHeight: number, user: ID) {
-  const { data } = await api.post<IdResp<'settings'> | { error: string }>(
-    '/api/TextSettings/createUserSettings',
-    { font, fontSize, lineHeight, user }
-  )
-  return data
-}
 
 export async function createDocumentSettings(font: string, fontSize: number, lineHeight: number, document: ID) {
   const { data } = await api.post<IdResp<'settings'> | { error: string }>(
@@ -280,14 +251,6 @@ export async function getDocumentCurrentSettings(document: ID) {
   const { data } = await api.post<Array<{ settings: TextSettings }> | { error: string }>(
     '/api/TextSettings/_getDocumentCurrentSettings',
     { document }
-  )
-  return data
-}
-
-export async function getTextSettings(textSettingsId: ID) {
-  const { data } = await api.post<Array<{ settings: TextSettings }> | { error: string }>(
-    '/api/TextSettings/_getTextSettings',
-    { textSettingsId }
   )
   return data
 }

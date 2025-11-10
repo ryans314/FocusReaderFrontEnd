@@ -6,8 +6,6 @@
 
 ## API Endpoints
 
-### POST /api/Annotation/createTag
-
 **Description:** Creates a new tag with a given title for a specific user.
 
 **Requirements:**
@@ -42,8 +40,7 @@
 }
 ```
 
----
-
+--- -->
 ### POST /api/Annotation/createAnnotation
 
 **Description:** Creates a new annotation within a document for a user.
@@ -264,44 +261,6 @@
 
 ## API Endpoints
 
-### POST /api/FocusStats/initUser
-
-**Description:** Initializes a FocusStats object for a new user.
-
-**Requirements:**
-- The user must exist (validation for external ID is assumed).
-- The user must not already have a FocusStats object.
-
-**Effects:**
-- Creates a new FocusStats record for the user with an empty set of FocusSessions.
-- Returns the ID of the newly created FocusStats object.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "focusStats": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
 ### POST /api/FocusStats/startSession
 
 **Description:** Records the beginning of a user's reading session on a document.
@@ -509,43 +468,6 @@
 ---
 
 ## API Endpoints
-
-### POST /api/Library/createLibrary
-
-**Description:** Creates a new library for a user.
-
-**Requirements:**
-- The user must not already be associated with a library.
-
-**Effects:**
-- Creates a new library linked to the user with an empty set of documents.
-- Returns the ID of the newly created library.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "library": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
 
 ### POST /api/Library/removeDocument
 
@@ -876,45 +798,6 @@
 
 ## API Endpoints
 
-### POST /api/Profile/createAccount
-
-**Description:** Creates a new user account with a username and password.
-
-**Requirements:**
-- The username must not be an existing username.
-- The password must be sufficiently secure (e.g., at least 8 characters long).
-
-**Effects:**
-- Creates a new user record with the provided username and a securely hashed password.
-- Returns the ID of the newly created user.
-
-**Request Body:**
-
-```json
-{
-  "username": "string",
-  "password": "string"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
 ### POST /api/Profile/deleteAccount
 
 **Description:** Deletes an existing user account.
@@ -1066,43 +949,6 @@
 
 ---
 
-### POST /api/Profile/_getAllUsers
-
-**Description:** Retrieves a list of all registered users.
-
-**Requirements:**
-- None (always executable).
-
-**Effects:**
-- Returns an array of objects, each containing the ID and username of a user.
-
-**Request Body:**
-
-```json
-{}
-```
-
-**Success Response Body (Query):**
-
-```json
-[
-  {
-    "id": "ID",
-    "username": "string"
-  }
-]
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
 # API Specification: TextSettings Concept
 
 **Purpose:** allow users to customize and set different text/display settings for each of their documents
@@ -1110,51 +956,6 @@
 ---
 
 ## API Endpoints
-
-### POST /api/TextSettings/createUserSettings
-
-**Description:** Creates a new text display settings configuration and sets it as a user's default.
-
-**Requirements:**
-- The user must exist (implicitly handled by external concept providing User ID).
-- There must not already be a default TextSettings for this user.
-- The font must be a valid HTML font string.
-- The fontSize must be a positive number.
-- The lineHeight must be greater than or equal to the fontSize.
-
-**Effects:**
-- Creates a new TextSettings configuration with the given font, fontSize, and lineHeight.
-- Associates this new configuration as the default for the specified user.
-- Returns the ID of the created TextSettings configuration.
-
-**Request Body:**
-
-```json
-{
-  "font": "string",
-  "fontSize": "number",
-  "lineHeight": "number",
-  "user": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "settings": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
 
 ### POST /api/TextSettings/createDocumentSettings
 
@@ -1329,46 +1130,3 @@
 
 ---
 
-### POST /api/TextSettings/_getTextSettings
-
-**Description:** Retrieves a specific text settings configuration by its ID.
-
-**Requirements:**
-- The textSettingsId must exist.
-
-**Effects:**
-- Returns an array containing the TextSettings configuration identified by the given ID.
-- Returns an empty array if the TextSettings configuration is not found.
-
-**Request Body:**
-
-```json
-{
-  "textSettingsId": "ID"
-}
-```
-
-**Success Response Body (Query):**
-
-```json
-[
-  {
-    "settings": {
-      "_id": "ID",
-      "font": "string",
-      "fontSize": "number",
-      "lineHeight": "number"
-    }
-  }
-]
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
