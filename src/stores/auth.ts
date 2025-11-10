@@ -1,13 +1,16 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { authenticate } from '@/lib/api/endpoints'
+import { authLogin, authLogout } from '@/lib/api/endpoints'
 import router from '@/router'
 
 /** Auth store: provides userId, pending, error, and login/logout actions. */
 export const useAuthStore = defineStore('auth', () => {
-  const STORAGE_KEY = 'focusReader.auth.userId'
-  const initial = (typeof window !== 'undefined') ? window.localStorage.getItem(STORAGE_KEY) : null
+  const STORAGE_KEY_USER = 'focusReader.auth.userId'
+  const STORAGE_KEY_SESSION = 'focusReader.auth.sessionId'
+  const initial = (typeof window !== 'undefined') ? window.localStorage.getItem(STORAGE_KEY_USER) : null
+  const initialSession = (typeof window !== 'undefined') ? window.localStorage.getItem(STORAGE_KEY_SESSION) : null
   const userId = ref<string | null>(initial)
+  const sessionId = ref<string | null>(initialSession)
   const pending = ref(false)
   const error = ref('')
 
@@ -17,10 +20,12 @@ export const useAuthStore = defineStore('auth', () => {
     pending.value = true
     error.value = ''
     try {
-      const res: any = await authenticate(username, password)
-      if (res && res.user) {
+      const res: any = await authLogin(username, password)
+      if (res && res.user && res.session) {
         userId.value = res.user
-        try { window.localStorage.setItem(STORAGE_KEY, res.user) } catch {}
+        sessionId.value = res.session
+        try { window.localStorage.setItem(STORAGE_KEY_USER, res.user) } catch {}
+        try { window.localStorage.setItem(STORAGE_KEY_SESSION, res.session) } catch {}
         return res
       }
       if (res && res.error) {
@@ -35,9 +40,17 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function logout() {
+  async function logout() {
+    const sid = sessionId.value
+    try {
+      if (sid) {
+        await authLogout(sid).catch(() => {})
+      }
+    } catch {}
     userId.value = null
-    try { window.localStorage.removeItem(STORAGE_KEY) } catch {}
+    sessionId.value = null
+    try { window.localStorage.removeItem(STORAGE_KEY_USER) } catch {}
+    try { window.localStorage.removeItem(STORAGE_KEY_SESSION) } catch {}
   }
 
   // Ensure logout also redirects to the landing page for safety when called from
@@ -51,14 +64,25 @@ export const useAuthStore = defineStore('auth', () => {
     userId.value = id
     try {
       if (id) {
-        window.localStorage.setItem(STORAGE_KEY, id)
+        window.localStorage.setItem(STORAGE_KEY_USER, id)
       } else {
-        window.localStorage.removeItem(STORAGE_KEY)
+        window.localStorage.removeItem(STORAGE_KEY_USER)
       }
     } catch {}
   }
 
-  return { userId, pending, error, isAuthed, login, logout, logoutAndRedirect, setUser }
+  function setSession(id: string | null) {
+    sessionId.value = id
+    try {
+      if (id) {
+        window.localStorage.setItem(STORAGE_KEY_SESSION, id)
+      } else {
+        window.localStorage.removeItem(STORAGE_KEY_SESSION)
+      }
+    } catch {}
+  }
+
+  return { userId, sessionId, pending, error, isAuthed, login, logout, logoutAndRedirect, setUser, setSession }
 })
 
 export default useAuthStore

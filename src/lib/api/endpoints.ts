@@ -38,6 +38,25 @@ export async function authenticate(username: string, password: string) {
   return data
 }
 
+// New authentication/session endpoints
+// POST /api/auth/login
+export async function authLogin(username: string, password: string) {
+  const { data } = await api.post<
+    | { request: ID; user: ID; session: ID; message: string }
+    | { request: ID; error: string }
+  >('/api/auth/login', { username, password })
+  return data
+}
+
+// POST /api/auth/logout
+export async function authLogout(session: ID) {
+  const { data } = await api.post<
+    | { request: ID; message: string }
+    | { request: ID; error: string }
+  >('/api/auth/logout', { session })
+  return data
+}
+
 export async function getUserDetails(user: ID) {
   const { data } = await api.post<Array<{ username: string }> | { error: string }>(
     '/api/Profile/_getUserDetails',
