@@ -313,9 +313,15 @@ async function createDoc() {
   error.value = null
   let approximateBytes = 0
   try {
-    const content = epubBase64.value || newDocContent.value
+    let content = epubBase64.value || newDocContent.value
     if (!content) throw new Error('Please upload an .epub file or paste Base64 content.')
     approximateBytes = Math.ceil((content.length * 3) / 4)
+    // Ensure EPUB has stable element ids (inject if necessary) so annotations
+    // can include [id...] steps in CFIs and rehydrate reliably.
+    try {
+      content = await ensureEpubHasIds(content)
+    } catch (err) { /* proceed with original content on failure */ }
+
     const res = await createDocument(newDocName.value, content, libraryId.value)
     if ('error' in res) throw new Error(res.error)
     const createdDocId = res.document
@@ -485,6 +491,73 @@ function sanitizeBase64(b64: string): string {
   if (remainder === 1) throw new Error('Invalid base64 content length')
   if (remainder === 0) return trimmed
   return trimmed.padEnd(trimmed.length + (4 - remainder), '=')
+}
+
+/**
+ * Ensure the EPUB package contains stable element ids that epub.js can reference.
+ * This function unpacks the base64 EPUB, inspects XHTML/HTML files for missing
+ * id (or xml:id) attributes, injects deterministic ids where absent, and
+ * re-packages the EPUB to base64. If any error occurs we return the original
+ * base64 so upload remains non-blocking.
+ */
+async function ensureEpubHasIds(b64: string): Promise<string> {
+  try {
+    const zip = await JSZip.loadAsync(sanitizeBase64(b64), { base64: true })
+    let changed = false
+    const candidates = Object.keys(zip.files).filter(p => {
+      const lower = p.toLowerCase()
+      return lower.endsWith('.xhtml') || lower.endsWith('.html') || lower.endsWith('.htm')
+    })
+    for (const path of candidates) {
+      try {
+        const file = zip.file(path)
+        if (!file) continue
+        const txt = await file.async('string')
+        // quick check: if the file already has id= or xml:id= we still may need to
+        // add ids to elements that don't have them; parse and inspect DOM.
+        const parser = new DOMParser()
+        // Parse as XML to preserve XHTML semantics; fallback to text/html
+        const doc = parser.parseFromString(txt, 'application/xml')
+        const parseError = doc.getElementsByTagName('parsererror')
+        const root = parseError && parseError.length ? parser.parseFromString(txt, 'text/html') : doc
+
+        // Choose elements likely relevant for highlighting; keep it conservative
+        const selectors = ['p','div','span','h1','h2','h3','h4','h5','section','article','li']
+        let counter = 0
+        const fileSafe = path.replace(/[^a-z0-9]+/gi, '-')
+        for (const sel of selectors) {
+          const els = Array.from((root as any).getElementsByTagName ? (root as any).getElementsByTagName(sel) : (root as any).querySelectorAll(sel)) as Element[]
+          for (const el of els) {
+            try {
+              const hasId = el.getAttribute && (el.getAttribute('id') || el.getAttribute('xml:id'))
+              if (!hasId) {
+                counter += 1
+                const gen = `fr-${fileSafe}-${counter}`
+                try { el.setAttribute('id', gen) } catch {}
+                changed = true
+              }
+            } catch {}
+          }
+        }
+        if (changed) {
+          try {
+            const serializer = new XMLSerializer()
+            const out = serializer.serializeToString(root)
+            zip.file(path, out)
+          } catch {}
+        }
+      } catch {}
+    }
+    if (!changed) return b64
+    // generate new base64 zip
+    const newBase64 = await zip.generateAsync({ type: 'base64' })
+    return sanitizeBase64(newBase64)
+  } catch (err) {
+    // If anything goes wrong, fall back to original payload so uploads don't
+    // fail unexpectedly.
+    try { console.warn('[library] ensureEpubHasIds failed, proceeding with original EPUB', err) } catch {}
+    return b64
+  }
 }
 
 async function createLib() {
