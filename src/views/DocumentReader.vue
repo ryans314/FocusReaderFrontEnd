@@ -2386,8 +2386,59 @@ function confirmHighlight(color?: string, note?: string) {
     }
   }
 
+  // Determine the CFI to store. Require that the stored CFI includes an element [id].
+  // If the pending CFI lacks an id, try to derive one from the current selection
+  // using epub.js (cfiFromRange / cfiFromElement) or by locating a nearby element
+  // with an id. If we cannot derive a CFI with an id, abort and surface an error
+  // instead of silently persisting an unstable CFI.
+  let cfiForStorage = normalizeCfi(cfi) || cfi
+  try {
+    if (!parseLooseEpubCfi(cfiForStorage).id) {
+      let derived: string | null = null
+      try {
+        const sel = pendingSelectionWindow?.getSelection?.()
+        const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null
+        if (range) {
+          try { if ((bookInstance as any)?.cfiFromRange) derived = (bookInstance as any).cfiFromRange(range) } catch {}
+          if (!derived) try { if ((renditionInstance as any)?.cfiFromRange) derived = (renditionInstance as any).cfiFromRange(range) } catch {}
+        }
+      } catch {}
+
+      if (!derived) {
+        try {
+          const sel = pendingSelectionWindow?.getSelection?.()
+          const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null
+          let node: Node | null = range ? (range.commonAncestorContainer || range.startContainer) : null
+          let el: Element | null = null
+          if (node) {
+            el = node.nodeType === 3 ? (node.parentElement as Element | null) : (node as Element)
+            while (el && !el.id) el = el.parentElement
+          }
+          if (el) {
+            try { if ((bookInstance as any)?.cfiFromElement) derived = (bookInstance as any).cfiFromElement(el) } catch {}
+            if (!derived) try { if ((renditionInstance as any)?.cfiFromElement) derived = (renditionInstance as any).cfiFromElement(el) } catch {}
+          }
+        } catch {}
+      }
+
+      if (derived && parseLooseEpubCfi(derived).id) {
+        cfiForStorage = normalizeCfi(derived) || derived
+      } else {
+        try { console.error('[reader] cannot create annotation: unable to derive element id for CFI', { original: cfi, derived }) } catch {}
+        try { window.alert('Unable to create annotation: could not determine a stable element id for the selection. Try selecting different text or ensure the EPUB content has element ids.') } catch {}
+        clearPendingConfirm()
+        return
+      }
+    }
+  } catch (err) {
+    try { console.error('[reader] error deriving CFI for annotation', err) } catch {}
+    try { window.alert('Unable to create annotation due to an internal error. See console for details.') } catch {}
+    clearPendingConfirm()
+    return
+  }
+
   // Record the annotation once (including chosen color and optional note)
-  const ann: { id?: string; cfi: string; text: string; color?: string; note?: string } = { cfi, text, color: chosenColor }
+  const ann: { id?: string; cfi: string; text: string; color?: string; note?: string } = { cfi: cfiForStorage, text, color: chosenColor }
   if (note) ann.note = note
   // Optimistically add to local list so UI updates immediately
   annotationsList.value.push(ann)
@@ -2400,7 +2451,7 @@ function confirmHighlight(color?: string, note?: string) {
           document: documentId,
           color: chosenColor,
           content: note ?? '',
-          location: cfi,
+          location: cfiForStorage,
           tags: [] as string[],
         }
         console.debug('[reader] createAnnotation payload', payload)
@@ -2408,7 +2459,7 @@ function confirmHighlight(color?: string, note?: string) {
           if (resp && (resp as any).annotation) {
             const createdId = (resp as any).annotation as string
             // update the in-memory record with id so future edits/deletes can reference it
-            const match = annotationsList.value.find((a) => a.cfi === cfi && (a.text || '').trim() === (text || '').trim())
+            const match = annotationsList.value.find((a) => normalizeCfi(a.cfi) === normalizeCfi(cfiForStorage) && (a.text || '').trim() === (text || '').trim())
             if (match) match.id = createdId
           }
         }).catch((err) => {
@@ -2676,23 +2727,72 @@ function confirmEditAnnotation() {
           const loc = cfiToEdit || (target ? target.cfi : undefined)
           if (loc) {
             if (userId.value && documentId) {
-              const payload = {
-                creator: userId.value,
-                document: documentId,
-                color: color,
-                content: note ?? '',
-                location: loc,
-                tags: [] as string[],
-              }
+                  // Ensure the location we persist includes an element id. Try to derive
+                  // a loc that contains an [id] (via cfiFromRange/cfiFromElement) if
+                  // the current loc lacks one. If we cannot derive an id, abort with
+                  // an error instead of silently persisting an unstable CFI.
+                  let locForStorage = normalizeCfi(loc) || loc
+                  try {
+                    if (!parseLooseEpubCfi(locForStorage).id) {
+                      let derived: string | null = null
+                      try {
+                        const sel = pendingSelectionWindow?.getSelection?.()
+                        const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null
+                        if (range) {
+                          try { if ((bookInstance as any)?.cfiFromRange) derived = (bookInstance as any).cfiFromRange(range) } catch {}
+                          if (!derived) try { if ((renditionInstance as any)?.cfiFromRange) derived = (renditionInstance as any).cfiFromRange(range) } catch {}
+                        }
+                      } catch {}
+
+                      if (!derived) {
+                        // Try to locate a nearby element with an id
+                        try {
+                          const sel = pendingSelectionWindow?.getSelection?.()
+                          const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null
+                          let node: Node | null = range ? (range.commonAncestorContainer || range.startContainer) : null
+                          let el: Element | null = null
+                          if (node) {
+                            el = node.nodeType === 3 ? (node.parentElement as Element | null) : (node as Element)
+                            while (el && !el.id) el = el.parentElement
+                          }
+                          if (el) {
+                            try { if ((bookInstance as any)?.cfiFromElement) derived = (bookInstance as any).cfiFromElement(el) } catch {}
+                            if (!derived) try { if ((renditionInstance as any)?.cfiFromElement) derived = (renditionInstance as any).cfiFromElement(el) } catch {}
+                          }
+                        } catch {}
+                      }
+
+                      if (derived && parseLooseEpubCfi(derived).id) {
+                        locForStorage = normalizeCfi(derived) || derived
+                      } else {
+                        try { console.error('[reader] cannot persist edited annotation: unable to derive element id for CFI', { original: loc, derived }) } catch {}
+                        try { window.alert('Unable to persist annotation edit: could not determine a stable element id for the selection.') } catch {}
+                        return
+                      }
+                    }
+                  } catch (err) {
+                    try { console.error('[reader] error deriving CFI for edited annotation', err) } catch {}
+                    try { window.alert('Unable to persist annotation edit due to an internal error. See console for details.') } catch {}
+                    return
+                  }
+
+                  const payload = {
+                    creator: userId.value,
+                    document: documentId,
+                    color: color,
+                    content: note ?? '',
+                    location: locForStorage,
+                    tags: [] as string[],
+                  }
               console.debug('[reader] createAnnotation (edit) payload', payload)
               createAnnotation(payload).then((resp: any) => {
                 if (resp && (resp as any).annotation) {
                   const createdId = (resp as any).annotation as string
                   // attach id to the matching in-memory record
-                  const match = annotationsList.value.find(a => a.cfi === loc || (a.text || '').trim() === (el.textContent || '').trim())
-                  if (match) match.id = createdId
-                  // Also mark DOM nodes with the new id so future edits/deletes sync instantly
-                  try { updateAnnotationElementsInDocs({ id: createdId, cfi: loc }, { color: color ?? null, note: note ?? null }) } catch {}
+                      const match = annotationsList.value.find(a => normalizeCfi(a.cfi) === normalizeCfi(locForStorage) || (a.text || '').trim() === (el.textContent || '').trim())
+                      if (match) match.id = createdId
+                      // Also mark DOM nodes with the new id so future edits/deletes sync instantly
+                      try { updateAnnotationElementsInDocs({ id: createdId, cfi: locForStorage }, { color: color ?? null, note: note ?? null }) } catch {}
                 }
               }).catch((err) => console.debug('[reader] createAnnotation failed (edit)', err))
             } else {
