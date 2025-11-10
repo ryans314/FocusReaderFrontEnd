@@ -41,16 +41,20 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
+    // Clear local auth state immediately so route guards and UI react
+    // synchronously (user is considered logged out locally).
     const sid = sessionId.value
+    userId.value = null
+    sessionId.value = null
+    try { window.localStorage.removeItem(STORAGE_KEY_USER) } catch {}
+    try { window.localStorage.removeItem(STORAGE_KEY_SESSION) } catch {}
+    // Invalidate session on server (best-effort). Do this after clearing
+    // local state so the UI can redirect instantly.
     try {
       if (sid) {
         await authLogout(sid).catch(() => {})
       }
     } catch {}
-    userId.value = null
-    sessionId.value = null
-    try { window.localStorage.removeItem(STORAGE_KEY_USER) } catch {}
-    try { window.localStorage.removeItem(STORAGE_KEY_SESSION) } catch {}
   }
 
   // Ensure logout also redirects to the landing page for safety when called from

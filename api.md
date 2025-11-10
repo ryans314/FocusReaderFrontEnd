@@ -508,16 +508,23 @@
 
 ### POST /api/Library/createDocument
 
-**Description:** Creates a new document and adds it to a user's library.
+**Description:** Creates a new document, registers it with dependent services (like Annotations and TextSettings), and adds it to a user's library. This is an authenticated endpoint that requires a valid user session.
 
 **Requirements:**
-- The library must exist.
-- A document with the given name must not already exist in the specified library.
+
+*   The user must provide a valid `session` ID obtained from a successful login.
+*   The provided `library` ID must exist and belong to the authenticated user.
+*   A document with the given `name` must not already exist in the specified library.
 
 **Effects:**
-- Creates a new document record with the provided name and epub content.
-- Adds the new document's ID to the library's documents set.
-- Returns the ID of the newly created document.
+
+*   If successful:
+    *   A new document record is created with the provided name and content.
+    *   The new document's ID is added to the user's library.
+    *   The document is registered with the Annotation concept, allowing annotations to be created.
+    *   Default text settings are created and associated with the new document.
+    *   The ID of the newly created document is returned.
+*   If any step fails (e.g., invalid session, incorrect library ID, duplicate name), an error message is returned.
 
 **Request Body:**
 
@@ -525,6 +532,7 @@
 {
   "name": "string",
   "epubContent": "string",
+  "session": "ID",
   "library": "ID"
 }
 ```
@@ -533,7 +541,9 @@
 
 ```json
 {
-  "document": "ID"
+  "request": "ID",
+  "document": "ID",
+  "message": "string"
 }
 ```
 
@@ -541,13 +551,10 @@
 
 ```json
 {
+  "request": "ID",
   "error": "string"
 }
-```
-
----
-
-### POST /api/Library/renameDocument
+```### POST /api/Library/renameDocument
 
 **Description:** Changes the name of an existing document within a user's library.
 

@@ -113,7 +113,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, registerDocumentWithAnnotationConcept, searchAnnotations, getDocumentCurrentSettings, editSettings, getLibraryByUser, startSession, endSession } from '@/lib/api/endpoints'
+import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, searchAnnotations, getDocumentCurrentSettings, editSettings, getLibraryByUser, startSession, endSession } from '@/lib/api/endpoints'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import ePub from 'epubjs'
@@ -1690,19 +1690,14 @@ onMounted(async () => {
         try { applyTheme(); applyFont() } catch {}
         }
     } catch {}
-    // FRONT-END SYNC: temporarily register the document with the Annotation
-    // concept so the backend accepts annotation creates for this document.
-    // This should be removed once server-side sync is in place.
+    // Load persisted annotations (server now ensures document is registered
+    // with the Annotation concept during document creation)
     try {
       if (userId.value && documentId) {
-        // await registration so that subsequent load of persisted annotations
-        // sees a registered document when the backend requires it.
-        await registerDocumentWithAnnotationConcept(userId.value, documentId).catch((err) => console.debug('[reader] registerDocumentWithAnnotationConcept failed on open', err))
-        // Now fetch persisted annotations and render them into the rendition
         try { await loadPersistedAnnotations() } catch (err) { console.debug('[reader] loadPersistedAnnotations error', err) }
       }
     } catch (err) {
-      console.debug('[reader] registerDocumentWithAnnotationConcept call error on open', err)
+      console.debug('[reader] loadPersistedAnnotations call error on open', err)
     }
   } catch (e: any) {
     error.value = e?.message ?? 'Failed to open document'

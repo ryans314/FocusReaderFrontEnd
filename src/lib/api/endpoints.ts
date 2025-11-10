@@ -82,10 +82,13 @@ export async function removeDocument(library: ID, document: ID) {
   return data
 }
 
-export async function createDocument(name: string, epubContent: string, library: ID) {
+// Note: server-side contract now requires a session id and handles
+// annotation registration and text-settings creation during document
+// creation. The frontend should pass the current session here.
+export async function createDocument(name: string, epubContent: string, library: ID, session: ID) {
   const { data } = await api.post<IdResp<'document'> | { error: string }>(
     '/api/Library/createDocument',
-    { name, epubContent, library }
+    { name, epubContent, library, session }
   )
   return data
 }
@@ -157,14 +160,9 @@ export async function createAnnotation(payload: {
 // Front-end convenience: register a document with the Annotation concept so
 // the backend will accept subsequent annotation creates. This is a temporary
 // "front-end sync" until the backend performs this automatically.
-export async function registerDocumentWithAnnotationConcept(creatorId: ID, documentId: ID) {
-  // Matches API spec: POST /api/Annotation/registerDocument with { documentId, creatorId }
-  const { data } = await api.post<Record<string, never> | { error: string }>(
-    '/api/Annotation/registerDocument',
-    { documentId, creatorId }
-  )
-  return data
-}
+// NOTE: Registration of documents with the Annotation concept is now
+// performed server-side during createDocument. The front-end no longer
+// needs to call a separate register endpoint.
 
 export async function deleteAnnotation(user: ID, annotation: ID) {
   const { data } = await api.post<Empty | { error: string }>(
@@ -242,13 +240,9 @@ export async function getSessions(user: ID) {
 
 // Text Settings
 
-export async function createDocumentSettings(font: string, fontSize: number, lineHeight: number, document: ID) {
-  const { data } = await api.post<IdResp<'settings'> | { error: string }>(
-    '/api/TextSettings/createDocumentSettings',
-    { font, fontSize, lineHeight, document }
-  )
-  return data
-}
+// NOTE: TextSettings for a newly-created document are now created by the
+// server as part of document creation. Frontend callers should no longer
+// call a separate createDocumentSettings endpoint.
 
 export async function editSettings(textSettings: ID, font: string, fontSize: number, lineHeight: number) {
   const { data } = await api.post<Empty | { error: string }>(
