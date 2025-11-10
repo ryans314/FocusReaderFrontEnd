@@ -113,7 +113,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, searchAnnotations, getDocumentCurrentSettings, editSettings, getLibraryByUser, startSession, endSession } from '@/lib/api/endpoints'
+import { getDocumentDetails, openDocument, closeDocument, createAnnotation, updateAnnotation, deleteAnnotation, searchAnnotations, getDocumentCurrentSettings, editSettings, getLibraryByUser } from '@/lib/api/endpoints'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import ePub from 'epubjs'
@@ -153,8 +153,6 @@ const fontPx = ref<number | null>(null)
 const lineHeightPx = ref<number | null>(null)
 const lineHeightRatio = ref<number>(1.5)
 const currentTextSettingsId = ref<string | null>(null)
-// FocusStats session tracking
-const focusSessionId = ref<string | null>(null)
 const currentLibraryId = ref<string | null>(null)
 // Cursor focus state
 const cursorFocusEnabled = ref(false)
@@ -1655,22 +1653,17 @@ onMounted(async () => {
     title.value = doc.name
 
     await renderEpubFromBase64(doc.epubContent)
-    // Start FocusStats session for this user/document (requires library id)
+    // Attempt to determine the user's library id (used for telemetry or
+    // other server-driven flows). The server now starts/ends FocusStats
+    // sessions when a document is opened/closed, so we don't call start/end
+    // explicitly from the client anymore.
     try {
-      if (userId.value) {
-        if (!currentLibraryId.value) {
-          try {
-            const lib = await getLibraryByUser(userId.value)
-            const libId = Array.isArray(lib) ? lib[0]?.library?._id : null
-            if (libId) currentLibraryId.value = libId
-          } catch {}
-        }
-        if (currentLibraryId.value) {
-          try {
-            const sres = await startSession(userId.value, documentId, currentLibraryId.value)
-            if (!('error' in sres)) focusSessionId.value = (sres as any).focusSession || null
-          } catch {}
-        }
+      if (userId.value && !currentLibraryId.value) {
+        try {
+          const lib = await getLibraryByUser(userId.value)
+          const libId = Array.isArray(lib) ? lib[0]?.library?._id : null
+          if (libId) currentLibraryId.value = libId
+        } catch {}
       }
     } catch {}
     // Load and apply document text settings
@@ -1713,13 +1706,8 @@ onBeforeUnmount(async () => {
     annotationAttachTimers.forEach((timer) => { try { clearTimeout(timer) } catch {} })
     annotationAttachTimers.clear()
   } catch {}
-  // End FocusStats session if one is active
-  try {
-    if (focusSessionId.value) {
-      try { await endSession(focusSessionId.value) } catch {}
-      focusSessionId.value = null
-    }
-  } catch {}
+  // The server finalizes FocusStats sessions when a document is closed
+  // via closeDocument; no explicit endSession call is needed here.
   if (userId.value && documentId) {
     try { await closeDocument(userId.value, documentId) } catch {}
   }

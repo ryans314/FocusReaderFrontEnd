@@ -261,85 +261,6 @@
 
 ## API Endpoints
 
-### POST /api/FocusStats/startSession
-
-**Description:** Records the beginning of a user's reading session on a document.
-
-**Requirements:**
-- The user must have the document in their library (external check, assumed true).
-- The user must have a FocusStats object initialized.
-
-**Effects:**
-- Creates a new FocusSession record with the user, document, current start time, and a null end time.
-- Returns the ID of the newly created FocusSession.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID",
-  "document": "ID",
-  "library": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "focusSession": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
-### POST /api/FocusStats/endSession
-
-**Description:** Marks the completion of an active reading session.
-
-**Requirements:**
-- The specified focusSession must exist.
-- The focusSession's end time must currently be null (i.e., it is an active session).
-
-**Effects:**
-- Sets the focusSession's end time to the current time.
-- Adds the ID of the ended focusSession to the corresponding user's FocusStats object.
-- Returns the ID of the updated FocusSession.
-
-**Request Body:**
-
-```json
-{
-  "focusSession": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "focusSession": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
 ### POST /api/FocusStats/removeSession
 
 **Description:** Permanently deletes a specific reading session record.
@@ -597,14 +518,20 @@
 
 ### POST /api/Library/openDocument
 
-**Description:** Confirms a document is accessible to a user.
+**Description:** Confirms a document is accessible to a user and begins tracking their reading time for that document.
 
 **Requirements:**
-- The user must be in a library that contains the specified document.
+
+* The user must be in a library that contains the specified document.
 
 **Effects:**
-- Confirms the document is accessible to the user (no state change explicitly tracked by this concept for "open" status).
-- Returns the ID of the document.
+
+* Confirms the document is accessible to the user (no state change explicitly tracked by this concept for "open" status).
+* Returns the ID of the document.
+
+**Side Effects (via Synchronization):**
+
+* **Triggers `FocusStats.startSession`:** This action automatically starts a new focus session in the `FocusStats` concept, effectively starting a timer to track the user's reading time for this document.
 
 **Request Body:**
 
@@ -631,18 +558,24 @@
 }
 ```
 
----
+***
 
 ### POST /api/Library/closeDocument
 
-**Description:** Confirms a document is no longer actively being accessed by a user.
+**Description:** Confirms a document is no longer actively being accessed by a user and stops tracking their reading time.
 
 **Requirements:**
-- The user must be in a library that contains the specified document.
+
+* The user must be in a library that contains the specified document.
 
 **Effects:**
-- Confirms the document is no longer actively being accessed by the user (no state change explicitly tracked by this concept for "close" status).
-- Returns the ID of the document.
+
+* Confirms the document is no longer actively being accessed by the user (no state change explicitly tracked by this concept for "close" status).
+* Returns the ID of the document.
+
+**Side Effects (via Synchronization):**
+
+* **Triggers `FocusStats.endSession`:** This action automatically finds the active focus session for the user and document and sets its end time, effectively stopping the reading timer and saving the session duration.
 
 **Request Body:**
 
@@ -669,7 +602,6 @@
 }
 ```
 
----
 
 ### POST /api/Library/_getLibraryByUser
 

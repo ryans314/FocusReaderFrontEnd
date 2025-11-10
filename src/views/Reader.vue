@@ -22,7 +22,6 @@ import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { openDocument, closeDocument } from '@/lib/api/endpoints'
-import { startSession, endSession } from '@/lib/api/endpoints'
 
 const auth = useAuthStore()
 const { userId } = storeToRefs(auth)
@@ -38,9 +37,8 @@ async function start() {
   try {
     const open = await openDocument(userId.value, documentId.value)
     if ('error' in open) throw new Error(open.error)
-    const res = await startSession(userId.value, documentId.value, libraryId.value)
-    if ('error' in res) throw new Error(res.error)
-    sessionId.value = res.focusSession
+    // Session tracking is created server-side when opening a document.
+    sessionId.value = 'active'
   } catch (e: any) {
     error.value = e?.message ?? 'Failed to start session'
   }
@@ -50,8 +48,7 @@ async function end() {
   error.value = ''
   if (!sessionId.value || !documentId.value || !userId.value) return
   try {
-    const res = await endSession(sessionId.value)
-    if ('error' in res) throw new Error(res.error)
+    // Closing the document will also finalize the server-side session.
     await closeDocument(userId.value, documentId.value)
     sessionId.value = ''
   } catch (e: any) {

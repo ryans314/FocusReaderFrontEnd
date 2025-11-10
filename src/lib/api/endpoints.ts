@@ -198,21 +198,11 @@ export async function searchAnnotations(user: ID, document: ID, criteria: string
 // Focus Stats
 
 
-export async function startSession(user: ID, document: ID, library: ID) {
-  const { data } = await api.post<IdResp<'focusSession'> | { error: string }>(
-    '/api/FocusStats/startSession',
-    { user, document, library }
-  )
-  return data
-}
-
-export async function endSession(focusSession: ID) {
-  const { data } = await api.post<IdResp<'focusSession'> | { error: string }>(
-    '/api/FocusStats/endSession',
-    { focusSession }
-  )
-  return data
-}
+// NOTE: Starting and ending focus sessions is now performed implicitly by
+// the Library concept's openDocument/closeDocument actions on the server.
+// The frontend should call openDocument/closeDocument; the server will
+// create and finalize FocusStats sessions. Explicit startSession/endSession
+// endpoints are no longer required by the client and have been removed.
 
 export async function removeSession(focusSession: ID) {
   const { data } = await api.post<Empty | { error: string }>(
