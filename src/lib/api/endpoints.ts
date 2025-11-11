@@ -8,7 +8,7 @@ type Empty = Record<string, never>
 // Profile
 export async function createAccount(username: string, password: string) {
   const { data } = await api.post<IdResp<'user'> | { error: string }>(
-    '/api/Profile/createAccount',
+    'Profile/createAccount',
     { username, password }
   )
   return data
@@ -16,7 +16,7 @@ export async function createAccount(username: string, password: string) {
 
 export async function deleteAccount(session: ID) {
   const { data } = await api.post<Empty | { error: string }>(
-    '/api/Profile/deleteAccount',
+    'Profile/deleteAccount',
     { session }
   )
   return data
@@ -24,7 +24,7 @@ export async function deleteAccount(session: ID) {
 
 export async function changePassword(session: ID, oldPassword: string, newPassword: string) {
   const { data } = await api.post<IdResp<'user'> | { error: string }>(
-    '/api/Profile/changePassword',
+    'Profile/changePassword',
     { session, oldPassword, newPassword }
   )
   return data
@@ -32,7 +32,7 @@ export async function changePassword(session: ID, oldPassword: string, newPasswo
 
 export async function authenticate(username: string, password: string) {
   const { data } = await api.post<IdResp<'user'> | { error: string }>(
-    '/api/Profile/authenticate',
+    'Profile/authenticate',
     { username, password }
   )
   return data
@@ -44,7 +44,7 @@ export async function authLogin(username: string, password: string) {
   const { data } = await api.post<
     | { request: ID; user: ID; session: ID; message: string }
     | { request: ID; error: string }
-  >('/api/auth/login', { username, password })
+  >('auth/login', { username, password })
   return data
 }
 
@@ -53,13 +53,13 @@ export async function authLogout(session: ID) {
   const { data } = await api.post<
     | { request: ID; message: string }
     | { request: ID; error: string }
-  >('/api/auth/logout', { session })
+  >('auth/logout', { session })
   return data
 }
 
 export async function getUserDetails(session: ID) {
   const { data } = await api.post<Array<{ username: string }> | { error: string }>(
-    '/api/Profile/_getUserDetails',
+    'Profile/_getUserDetails',
     { session }
   )
   return data
@@ -68,7 +68,7 @@ export async function getUserDetails(session: ID) {
 // Library
 export async function createLibrary(user: ID) {
   const { data } = await api.post<IdResp<'library'> | { error: string }>(
-    '/api/Library/createLibrary',
+    'Library/createLibrary',
     { user }
   )
   return data
@@ -76,7 +76,7 @@ export async function createLibrary(user: ID) {
 
 export async function removeDocument(session: ID, document: ID) {
   const { data } = await api.post<Empty | { error: string }>(
-    '/api/Library/removeDocument',
+    'Library/removeDocument',
     { session, document }
   )
   return data
@@ -87,7 +87,7 @@ export async function removeDocument(session: ID, document: ID) {
 // creation. The frontend should pass the current session here.
 export async function createDocument(name: string, epubContent: string, library: ID, session: ID) {
   const { data } = await api.post<IdResp<'document'> | { error: string }>(
-    '/api/Library/createDocument',
+    'Library/createDocument',
     { name, epubContent, library, session }
   )
   return data
@@ -95,7 +95,7 @@ export async function createDocument(name: string, epubContent: string, library:
 
 export async function renameDocument(user: ID, newName: string, document: ID) {
   const { data } = await api.post<IdResp<'document'> | { error: string }>(
-    '/api/Library/renameDocument',
+    'Library/renameDocument',
     { user, newName, document }
   )
   return data
@@ -103,7 +103,7 @@ export async function renameDocument(user: ID, newName: string, document: ID) {
 
 export async function openDocument(user: ID, document: ID) {
   const { data } = await api.post<IdResp<'document'> | { error: string }>(
-    '/api/Library/openDocument',
+    'Library/openDocument',
     { user, document }
   )
   return data
@@ -111,7 +111,7 @@ export async function openDocument(user: ID, document: ID) {
 
 export async function closeDocument(user: ID, document: ID) {
   const { data } = await api.post<IdResp<'document'> | { error: string }>(
-    '/api/Library/closeDocument',
+    'Library/closeDocument',
     { user, document }
   )
   return data
@@ -119,7 +119,7 @@ export async function closeDocument(user: ID, document: ID) {
 
 export async function getLibraryByUser(user: ID) {
   const { data } = await api.post<Array<{ library: Library }> | { error: string }>(
-    '/api/Library/_getLibraryByUser',
+    'Library/_getLibraryByUser',
     { user }
   )
   return data
@@ -127,7 +127,7 @@ export async function getLibraryByUser(user: ID) {
 
 export async function getDocumentsInLibrary(library: ID) {
   const { data } = await api.post<Array<{ document: Document }> | { error: string }>(
-    '/api/Library/_getDocumentsInLibrary',
+    'Library/_getDocumentsInLibrary',
     { library }
   )
   return data
@@ -135,7 +135,7 @@ export async function getDocumentsInLibrary(library: ID) {
 
 export async function getDocumentDetails(document: ID) {
   const { data } = await api.post<Array<{ document: Document }> | { error: string }>(
-    '/api/Library/_getDocumentDetails',
+    'Library/_getDocumentDetails',
     { document }
   )
   return data
@@ -151,7 +151,7 @@ export async function createAnnotation(payload: {
   tags: ID[]
 }) {
   const { data } = await api.post<IdResp<'annotation'> | { error: string }>(
-    '/api/Annotation/createAnnotation',
+    'Annotation/createAnnotation',
     payload
   )
   return data
@@ -166,7 +166,7 @@ export async function createAnnotation(payload: {
 
 export async function deleteAnnotation(user: ID, annotation: ID) {
   const { data } = await api.post<Empty | { error: string }>(
-    '/api/Annotation/deleteAnnotation',
+    'Annotation/deleteAnnotation',
     { user, annotation }
   )
   return data
@@ -181,7 +181,7 @@ export async function updateAnnotation(payload: {
   newTags?: ID[]
 }) {
   const { data } = await api.post<IdResp<'annotation'> | { error: string }>(
-    '/api/Annotation/updateAnnotation',
+    'Annotation/updateAnnotation',
     payload
   )
   return data
@@ -189,7 +189,7 @@ export async function updateAnnotation(payload: {
 
 export async function searchAnnotations(user: ID, document: ID, criteria: string) {
   const { data } = await api.post<Array<{ annotations: Annotation[] }> | { error: string }>(
-    '/api/Annotation/search',
+    'Annotation/search',
     { user, document, criteria }
   )
   return data
@@ -206,7 +206,7 @@ export async function searchAnnotations(user: ID, document: ID, criteria: string
 
 export async function removeSession(session: ID, focusSession: ID) {
   const { data } = await api.post<Empty | { error: string }>(
-    '/api/FocusStats/removeSession',
+    'FocusStats/removeSession',
     { session, focusSession }
   )
   return data
@@ -214,7 +214,7 @@ export async function removeSession(session: ID, focusSession: ID) {
 
 export async function viewStats(session: ID) {
   const { data } = await api.post<any | { error: string }>(
-    '/api/FocusStats/_viewStats',
+    'FocusStats/_viewStats',
     { session }
   )
   // Normalize possible server shapes to Array<{ focusStats: FocusStats }>
@@ -239,7 +239,7 @@ export async function viewStats(session: ID) {
 
 export async function getSessions(session: ID) {
   const { data } = await api.post<any | { error: string }>(
-    '/api/FocusStats/_getSessions',
+    'FocusStats/_getSessions',
     { session }
   )
   // Normalize to Array<{ focusSession: FocusSession }>
@@ -266,7 +266,7 @@ export async function getSessions(session: ID) {
 
 export async function editSettings(textSettings: ID, font: string, fontSize: number, lineHeight: number) {
   const { data } = await api.post<Empty | { error: string }>(
-    '/api/TextSettings/editSettings',
+    'TextSettings/editSettings',
     { textSettings, font, fontSize, lineHeight }
   )
   return data
@@ -274,7 +274,7 @@ export async function editSettings(textSettings: ID, font: string, fontSize: num
 
 export async function getUserDefaultSettings(user: ID) {
   const { data } = await api.post<Array<{ settings: TextSettings }> | { error: string }>(
-    '/api/TextSettings/_getUserDefaultSettings',
+    'TextSettings/_getUserDefaultSettings',
     { user }
   )
   return data
@@ -282,7 +282,7 @@ export async function getUserDefaultSettings(user: ID) {
 
 export async function getDocumentCurrentSettings(document: ID) {
   const { data } = await api.post<Array<{ settings: TextSettings }> | { error: string }>(
-    '/api/TextSettings/_getDocumentCurrentSettings',
+    'TextSettings/_getDocumentCurrentSettings',
     { document }
   )
   return data
