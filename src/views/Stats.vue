@@ -63,7 +63,7 @@ import type { FocusSession, FocusStats } from '@/lib/api/types'
 import { options } from 'node_modules/axios/index.cjs'
 
 const auth = useAuthStore()
-const { userId } = storeToRefs(auth)
+const { userId, sessionId } = storeToRefs(auth)
 
 const overview = ref<FocusStats | null>(null)
 const sessions = ref<FocusSession[]>([])
@@ -199,7 +199,8 @@ async function onDeleteSession(id: string) {
   try {
     if (!confirm('Delete this session? This cannot be undone.')) return
     deletingSessions.value[id] = true
-    const res: any = await removeSession(id)
+    if (!sessionId.value) throw new Error('Not authenticated')
+    const res: any = await removeSession(sessionId.value, id)
     if (res && (res.error)) {
       throw new Error(res.error)
     }
@@ -213,16 +214,16 @@ async function onDeleteSession(id: string) {
 }
 
 async function load() {
-  if (!userId.value) return
+  if (!sessionId.value) return
   error.value = ''
   try {
-    const o = await viewStats(userId.value)
+    const o = await viewStats(sessionId.value)
     if ('error' in o) throw new Error(o.error)
     overview.value = o[0]?.focusStats ?? null
 
-    const s = await getSessions(userId.value)
+    const s = await getSessions(sessionId.value)
     if ('error' in s) throw new Error(s.error)
-    sessions.value = s.map((x) => x.focusSession)
+  sessions.value = s.map((x: any) => x.focusSession)
 
     // Fetch document names for all referenced documents (deduped)
     const ids = Array.from(new Set(sessions.value.map(ss => ss.document)))

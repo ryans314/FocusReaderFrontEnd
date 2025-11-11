@@ -14,18 +14,18 @@ export async function createAccount(username: string, password: string) {
   return data
 }
 
-export async function deleteAccount(user: ID) {
+export async function deleteAccount(session: ID) {
   const { data } = await api.post<Empty | { error: string }>(
     '/api/Profile/deleteAccount',
-    { user }
+    { session }
   )
   return data
 }
 
-export async function changePassword(user: ID, oldPassword: string, newPassword: string) {
+export async function changePassword(session: ID, oldPassword: string, newPassword: string) {
   const { data } = await api.post<IdResp<'user'> | { error: string }>(
     '/api/Profile/changePassword',
-    { user, oldPassword, newPassword }
+    { session, oldPassword, newPassword }
   )
   return data
 }
@@ -57,10 +57,10 @@ export async function authLogout(session: ID) {
   return data
 }
 
-export async function getUserDetails(user: ID) {
+export async function getUserDetails(session: ID) {
   const { data } = await api.post<Array<{ username: string }> | { error: string }>(
     '/api/Profile/_getUserDetails',
-    { user }
+    { session }
   )
   return data
 }
@@ -74,10 +74,10 @@ export async function createLibrary(user: ID) {
   return data
 }
 
-export async function removeDocument(library: ID, document: ID) {
+export async function removeDocument(session: ID, document: ID) {
   const { data } = await api.post<Empty | { error: string }>(
     '/api/Library/removeDocument',
-    { library, document }
+    { session, document }
   )
   return data
 }
@@ -204,28 +204,58 @@ export async function searchAnnotations(user: ID, document: ID, criteria: string
 // create and finalize FocusStats sessions. Explicit startSession/endSession
 // endpoints are no longer required by the client and have been removed.
 
-export async function removeSession(focusSession: ID) {
+export async function removeSession(session: ID, focusSession: ID) {
   const { data } = await api.post<Empty | { error: string }>(
     '/api/FocusStats/removeSession',
-    { focusSession }
+    { session, focusSession }
   )
   return data
 }
 
-export async function viewStats(user: ID) {
-  const { data } = await api.post<Array<{ focusStats: FocusStats }> | { error: string }>(
+export async function viewStats(session: ID) {
+  const { data } = await api.post<any | { error: string }>(
     '/api/FocusStats/_viewStats',
-    { user }
+    { session }
   )
-  return data
+  // Normalize possible server shapes to Array<{ focusStats: FocusStats }>
+  try {
+    if (!data) return data
+    // If server returns { stats: { ... } } => wrap
+    if (data.stats && !Array.isArray(data.stats)) {
+      return [{ focusStats: data.stats }]
+    }
+    // If server returns { stats: [ ... ] }
+    if (data.stats && Array.isArray(data.stats)) {
+      return data.stats.map((s: any) => ({ focusStats: s }))
+    }
+    // If server already returns Array<{ focusStats }>
+    if (Array.isArray(data)) return data
+    // Fallback: return as-is
+    return data
+  } catch {
+    return data
+  }
 }
 
-export async function getSessions(user: ID) {
-  const { data } = await api.post<Array<{ focusSession: FocusSession }> | { error: string }>(
+export async function getSessions(session: ID) {
+  const { data } = await api.post<any | { error: string }>(
     '/api/FocusStats/_getSessions',
-    { user }
+    { session }
   )
-  return data
+  // Normalize to Array<{ focusSession: FocusSession }>
+  try {
+    if (!data) return data
+    if (data.sessions && !Array.isArray(data.sessions)) {
+      return [{ focusSession: data.sessions }]
+    }
+    if (data.sessions && Array.isArray(data.sessions)) {
+      return data.sessions.map((s: any) => ({ focusSession: s }))
+    }
+    if (Array.isArray(data)) return data
+    return data
+  } catch {
+    return data
+  }
 }
 
 // Text Settings

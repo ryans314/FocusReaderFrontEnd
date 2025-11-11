@@ -73,7 +73,7 @@ import { useAuthStore } from '@/stores/auth'
 import { getUserDetails, changePassword, getUserDefaultSettings, editSettings } from '@/lib/api/endpoints'
 
 const auth = useAuthStore()
-const { userId } = storeToRefs(auth)
+const { userId, sessionId } = storeToRefs(auth)
 
 const username = ref('')
 const pwdPending = ref(false)
@@ -106,11 +106,16 @@ const fontOptions = [
 ]
 
 onMounted(async () => {
-  // Fetch username
-  if (userId.value) {
+  // Fetch username (session-based)
+  if (sessionId.value) {
     try {
-      const ures = await getUserDetails(userId.value)
-      if (Array.isArray(ures) && ures[0]?.username) username.value = ures[0].username
+      const ures: any = await getUserDetails(sessionId.value)
+      if (Array.isArray(ures) && ures[0]?.username) {
+        username.value = ures[0].username
+      } else if (ures && (ures.username || (ures[0] && ures[0].username))) {
+        // handle server responses that return an object { username } or array
+        username.value = ures.username || (Array.isArray(ures) ? ures[0]?.username : '')
+      }
     } catch {}
   }
 
@@ -147,14 +152,15 @@ function validatePasswordInputs(): string | null {
 }
 
 async function onChangePassword() {
-  if (!userId.value) return
+  if (!sessionId.value) return
   pwdError.value = ''
   pwdSuccess.value = false
   const v = validatePasswordInputs()
   if (v) { pwdError.value = v; return }
   pwdPending.value = true
   try {
-    const res: any = await changePassword(userId.value, currentPassword.value, newPassword.value)
+    if (!sessionId.value) throw new Error('Not authenticated')
+    const res: any = await changePassword(sessionId.value, currentPassword.value, newPassword.value)
     if (res && (res.user || res.error === undefined)) {
       pwdSuccess.value = true
       currentPassword.value = ''

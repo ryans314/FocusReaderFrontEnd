@@ -263,124 +263,94 @@
 
 ### POST /api/FocusStats/removeSession
 
-**Description:** Permanently deletes a specific reading session record.
-
-**Requirements:**
-- The specified focusSession must exist.
-
-**Effects:**
-- Removes the focusSession from the set of FocusSessions.
-- Removes the reference to this focusSession ID from the user's FocusStats object.
-
-**Request Body:**
-
-```json
-{
-  "focusSession": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
-### POST /api/FocusStats/_viewStats
-
-**Description:** Retrieves a high-level overview of a user's reading statistics.
-
-**Requirements:**
-- The user must be associated with a FocusStats object.
-
-**Effects:**
-- Returns an array containing the FocusStats object for the given user, including its ID, user ID, and an array of referenced FocusSession IDs.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Success Response Body (Query):**
-
-```json
-[
-  {
-    "focusStats": {
-      "id": "ID",
-      "user": "ID",
-      "ds": ["ID"]
+*   **Description:** Removes a specific focus/reading session record.
+*   **Authorization:** Requires a valid `session` ID to authorize the request (the system does not currently verify that the session belongs to the user, only that the request is from a logged-in user).
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID",
+      "focusSession": "ID"
     }
-  }
-]
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
----
-
-### POST /api/FocusStats/_getSessions
-
-**Description:** Retrieves detailed information for all individual reading sessions of a specific user.
-
-**Requirements:**
-- The user must be associated with a FocusStats object.
-
-**Effects:**
-- Returns an array containing all FocusSession documents belonging to the given user.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Success Response Body (Query):**
-
-```json
-[
-  {
-    "focusSession": {
-      "_id": "ID",
-      "user": "ID",
-      "document": "ID",
-      "startTime": "Date",
-      "endTime": "Date | null"
+    ```
+*   **Success Response Body:**
+    ```json
+    {
+      "success": true
     }
-  }
-]
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
+    ```
+*   **Error Response Body:**
+    ```json
+    {
+      "error": "Session with id [session_id] not found"
+    }
+    ```
+    ```json
+    {
+      "error": "FocusSession [focus_session_id] not found."
+    }
+    ```
 
 ---
+
+### POST /api/FocusStats/\_viewStats
+
+*   **Description:** Retrieves the high-level reading statistics for the user associated with the provided session.
+*   **Authorization:** Requires a valid `session` ID in the request body.
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID"
+    }
+    ```
+*   **Success Response Body:** A JSON object containing the stats data.
+    ```json
+    {
+      "stats": {
+        "id": "ID",
+        "user": "ID",
+        "focusSessionIds": ["ID", "ID", "..."]
+      }
+    }
+    ```
+*   **Error Response Body:** An object containing an error message.
+    ```json
+    {
+      "error": "FocusStats not found for user [user_id]."
+    }
+    ```
+
+### POST /api/FocusStats/\_getSessions
+
+*   **Description:** Retrieves the detailed data for all reading sessions of the user associated with the provided session.
+*   **Authorization:** Requires a valid `session` ID in the request body.
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID"
+    }
+    ```
+*   **Success Response Body:** A JSON object containing a flat array of all session objects.
+    ```json
+    {
+      "sessions": [
+        {
+          "_id": "ID",
+          "user": "ID",
+          "document": "ID",
+          "startTime": "Date",
+          "endTime": "Date | null"
+        },
+        {
+          "_id": "ID",
+          "user": "ID",
+          "document": "ID",
+          "startTime": "Date",
+          "endTime": "Date | null"
+        }
+      ]
+    }
+    ```
+*   **Note:** If the user has no sessions, the response will be `{"sessions": []}`.
 
 # API Specification: Library Concept
 
@@ -392,38 +362,32 @@
 
 ### POST /api/Library/removeDocument
 
-**Description:** Removes a document from a user's library and deletes the document record.
-
-**Requirements:**
-- The library must exist.
-- The document must be present in the specified library.
-
-**Effects:**
-- Removes the document's ID from the library's documents set.
-- Deletes the document record from the set of all documents.
-
-**Request Body:**
-
-```json
-{
-  "library": "ID",
-  "document": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
+*   **Description:** Removes a specified document from the library of the user associated with the provided session.
+*   **Authorization:** Requires a valid `session` ID.
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID",
+      "document": "ID"
+    }
+    ```
+*   **Success Response Body:**
+    ```json
+    {
+      "success": true
+    }
+    ```
+*   **Error Response Body:**
+    ```json
+    {
+      "error": "Session with id [session_id] not found"
+    }
+    ```
+    ```json
+    {
+      "error": "Document [document_id] is not in library [library_id]."
+    }
+    ```
 
 ---
 
@@ -739,78 +703,63 @@
 
 ### POST /api/Profile/deleteAccount
 
-**Description:** Deletes an existing user account.
-
-**Requirements:**
-- The user must exist.
-
-**Effects:**
-- Removes the user record from the set of Users.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
+*   **Description:** Deletes the account associated with the provided session.
+*   **Authorization:** Requires a valid `session` ID. The server uses this to identify which user account to delete.
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID"
+    }
+    ```
+*   **Success Response Body:**
+    ```json
+    {
+      "success": true
+    }
+    ```
+*   **Error Response Body:**
+    ```json
+    {
+      "error": "Session with id [session_id] not found"
+    }
+    ```
+    ```json
+    {
+      "error": "User '[user_id]' not found."
+    }
+    ```
 
 ---
 
 ### POST /api/Profile/changePassword
 
-**Description:** Allows a user to change their account password.
-
-**Requirements:**
-- The user must exist.
-- The provided oldPassword must match the user's current password (verified against its hash).
-- The newPassword must be sufficiently secure (e.g., at least 8 characters long).
-- The newPassword must not be the same as the old password.
-
-**Effects:**
-- Modifies the user's record to have the new, securely hashed password.
-- Returns the ID of the updated user.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID",
-  "oldPassword": "string",
-  "newPassword": "string"
-}
-```
-
-**Success Response Body (Action):**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
-
+*   **Description:** Changes the password for the user associated with the provided session.
+*   **Authorization:** Requires a valid `session` ID.
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID",
+      "oldPassword": "string",
+      "newPassword": "string"
+    }
+    ```
+*   **Success Response Body:**
+    ```json
+    {
+      "user": "ID"
+    }
+    ```
+*   **Error Response Body:**
+    ```json
+    {
+      "error": "Session with id [session_id] not found"
+    }
+    ```
+    ```json
+    {
+      "error": "Incorrect old password."
+    }
+    ```
 ---
 
 ### POST /api/Profile/authenticate
@@ -852,39 +801,26 @@
 
 ### POST /api/Profile/_getUserDetails
 
-**Description:** Retrieves the username for a specific user.
-
-**Requirements:**
-- The user must exist.
-
-**Effects:**
-- Returns an array containing an object with the username of the specified user.
-
-**Request Body:**
-
-```json
-{
-  "user": "ID"
-}
-```
-
-**Success Response Body (Query):**
-
-```json
-[
-  {
-    "username": "string"
-  }
-]
-```
-
-**Error Response Body:**
-
-```json
-{
-  "error": "string"
-}
-```
+*   **Description:** Retrieves the username for the user associated with the provided session.
+*   **Authorization:** Requires a valid `session` ID.
+*   **Request Body:**
+    ```json
+    {
+      "session": "ID"
+    }
+    ```
+*   **Success Response Body (Query):**
+    ```json
+    {
+        "username": "string"
+    }
+    ```
+*   **Error Response Body:**
+    ```json
+    {
+        "error": "User '[user_id]' not found."
+    }
+    ```
 
 ---
 

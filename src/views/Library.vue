@@ -358,7 +358,8 @@ async function removeDoc(id: string) {
   if (!libraryId.value) return
   pending.value = true
   try {
-    const res = await removeDocument(libraryId.value, id)
+    if (!sessionId.value) throw new Error('Not authenticated')
+    const res = await removeDocument(sessionId.value, id)
     if ('error' in res) throw new Error(res.error)
     await load()
   } catch (e: any) {
